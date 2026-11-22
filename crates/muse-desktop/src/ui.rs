@@ -1035,7 +1035,7 @@ impl MuseWindow {
                     .apply_browser_event(identity, BrowserEvent::History { back, forward });
                 changed = true;
             }
-            if let Ok(url) = view.url() {
+            if let Some(url) = crate::browser::current_url(view) {
                 let differs = self
                     .workspace
                     .active_account()

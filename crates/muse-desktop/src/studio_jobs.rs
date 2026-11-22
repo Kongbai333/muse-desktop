@@ -561,7 +561,7 @@ impl MuseWindow {
             .as_ref()
             .and_then(|job| job.identity)
             .and_then(|identity| self.browsers.view(identity.tab_id))
-            .and_then(|view| view.url().ok())
+            .and_then(crate::browser::current_url)
             .filter(|url| muse_core::trusted_muse_url(url));
         if let Some(identity) = job.as_ref().and_then(|job| job.identity) {
             let _ = self.browsers.evaluate_studio(

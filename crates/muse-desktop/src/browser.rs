@@ -36,6 +36,19 @@ fn wake(_: &HostedTab) {}
 #[cfg(target_os = "macos")]
 fn set_memory_target(_: &HostedTab, _: bool) {}
 
+/// A newly-created WKWebView has no URL until navigation commits. Wry 0.57.1
+/// unwraps that nullable property, so macOS uses an optional native read instead.
+pub fn current_url(view: &WebView) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        view.url().ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::current_url(view)
+    }
+}
+
 pub struct BrowserRequest<'a> {
     pub identity: BrowserIdentity,
     pub url: &'a str,
@@ -664,11 +677,7 @@ impl BrowserPool {
             .find(|tab| {
                 tab.identity.account_id == id
                     && !self.cookie_only.contains(&tab.identity)
-                    && tab
-                        .view
-                        .url()
-                        .ok()
-                        .is_some_and(|url| muse_core::trusted_muse_url(&url))
+                    && current_url(&tab.view).is_some_and(|url| muse_core::trusted_muse_url(&url))
             })
             .map(|tab| tab.identity)
     }
@@ -690,9 +699,7 @@ impl BrowserPool {
             t.identity == identity
                 && (self.cookie_only.contains(&identity)
                     || (t.gate.lock().unwrap().ready()
-                        && t.view
-                            .url()
-                            .ok()
+                        && current_url(&t.view)
                             .is_some_and(|url| muse_core::trusted_muse_url(&url))))
         }) else {
             return false;
@@ -773,20 +780,14 @@ impl BrowserPool {
         self.tabs.get(&identity.tab_id).is_some_and(|t| {
             t.identity == identity
                 && t.gate.lock().unwrap().epoch() == epoch
-                && t.view
-                    .url()
-                    .ok()
-                    .is_some_and(|url| muse_core::trusted_muse_url(&url))
+                && current_url(&t.view).is_some_and(|url| muse_core::trusted_muse_url(&url))
         })
     }
     pub fn accepts_cookie_result(&self, identity: BrowserIdentity) -> bool {
         self.tabs.get(&identity.tab_id).is_some_and(|t| {
             t.identity == identity
                 && (self.cookie_only.contains(&identity)
-                    || t.view
-                        .url()
-                        .ok()
-                        .is_some_and(|url| muse_core::trusted_muse_url(&url)))
+                    || current_url(&t.view).is_some_and(|url| muse_core::trusted_muse_url(&url)))
         })
     }
 
@@ -920,7 +921,7 @@ impl BrowserPool {
             );
             return false;
         };
-        if tab.view.url().ok().as_deref() != Some(snapshot.url.as_str()) {
+        if current_url(&tab.view).as_deref() != Some(snapshot.url.as_str()) {
             self.observations.insert(
                 identity,
                 ObserverFlags {

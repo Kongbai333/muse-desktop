@@ -5,8 +5,17 @@ use objc2::{
     rc::Retained,
     runtime::{AnyObject, Bool},
 };
-use objc2_foundation::NSString;
+use objc2_foundation::{NSString, NSURL};
 use wry::WebViewExtMacOS;
+
+pub(super) fn current_url(view: &WebView) -> Option<String> {
+    let url: Option<Retained<NSURL>> = unsafe { msg_send![&*view.webview(), URL] };
+    native_url_string(url.as_deref())
+}
+
+fn native_url_string(url: Option<&NSURL>) -> Option<String> {
+    url?.absoluteString().map(|value| value.to_string())
+}
 
 pub(super) fn data_store_id(view: &WebView) -> Result<AccountId, String> {
     unsafe {
@@ -113,10 +122,7 @@ impl BrowserPool {
             tab.identity == identity
                 && (self.cookie_only.contains(&identity)
                     || (tab.gate.lock().unwrap().ready()
-                        && tab
-                            .view
-                            .url()
-                            .ok()
+                        && current_url(&tab.view)
                             .is_some_and(|url| muse_core::trusted_muse_url(&url))))
         }) else {
             return false;
@@ -220,5 +226,22 @@ unsafe fn snapshot_png(image: &AnyObject) -> Option<Vec<u8>> {
             return None;
         }
         Some(std::slice::from_raw_parts(pointer, length).to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_uncommitted_native_url_is_pending_instead_of_panicking() {
+        assert_eq!(native_url_string(None), None);
+    }
+
+    #[test]
+    fn a_committed_native_url_preserves_its_origin_path_and_query() {
+        let value = "https://muse.ai/library?view=recent&from=desktop#items";
+        let native = NSURL::URLWithString(&NSString::from_str(value)).unwrap();
+        assert_eq!(native_url_string(Some(&native)).as_deref(), Some(value));
     }
 }
