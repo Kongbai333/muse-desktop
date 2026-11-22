@@ -129,6 +129,21 @@ fn forward(
         browser.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
         return Ok(());
     }
+    // Network.framework can tunnel even a plain HTTP origin through CONNECT.
+    // The fixture permits only its exact loopback target, never arbitrary hosts.
+    if method == "CONNECT" && uri == format!("127.0.0.1:{target_port}") {
+        let mut target = TcpStream::connect(("127.0.0.1", target_port))?;
+        requests.fetch_add(1, Ordering::Relaxed);
+        browser.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
+        let mut browser_read = browser.try_clone()?;
+        let mut target_write = target.try_clone()?;
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut browser_read, &mut target_write);
+            let _ = target_write.shutdown(std::net::Shutdown::Write);
+        });
+        let _ = std::io::copy(&mut target, &mut browser);
+        return Ok(());
+    }
     let url = match url::Url::parse(uri) {
         Ok(url) => url,
         Err(_) => {

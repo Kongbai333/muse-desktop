@@ -35,6 +35,8 @@ unsafe extern "C" {
         password: *const std::ffi::c_char,
     );
     fn nw_proxy_config_set_failover_allowed(config: *mut AnyObject, allowed: bool);
+    fn nw_proxy_config_clear_match_domains(config: *mut AnyObject);
+    fn nw_proxy_config_clear_excluded_domains(config: *mut AnyObject);
 }
 
 pub(super) fn install_proxy(view: &WebView, bridge: &ProxyBridge) -> Result<(), String> {
@@ -60,12 +62,25 @@ pub(super) fn install_proxy(view: &WebView, bridge: &ProxyBridge) -> Result<(), 
             password.as_ptr(),
         );
         nw_proxy_config_set_failover_allowed(Retained::as_ptr(&proxy).cast_mut(), false);
+        nw_proxy_config_clear_match_domains(Retained::as_ptr(&proxy).cast_mut());
+        nw_proxy_config_clear_excluded_domains(Retained::as_ptr(&proxy).cast_mut());
         let proxies: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: &*proxy];
         let configuration: Retained<AnyObject> = msg_send![&*view.webview(), configuration];
         let store: Retained<AnyObject> = msg_send![&*configuration, websiteDataStore];
         let _: () = msg_send![&*store, setProxyConfigurations: &*proxies];
     }
     Ok(())
+}
+
+pub(super) fn clear_proxy(view: &WebView) {
+    // A persistent store may outlive its last view. Explicitly remove the old
+    // account proxy when the user switches back to system networking.
+    unsafe {
+        let proxies: Retained<AnyObject> = msg_send![class!(NSArray), array];
+        let configuration: Retained<AnyObject> = msg_send![&*view.webview(), configuration];
+        let store: Retained<AnyObject> = msg_send![&*configuration, websiteDataStore];
+        let _: () = msg_send![&*store, setProxyConfigurations: &*proxies];
+    }
 }
 
 pub(super) fn zoom(view: &WebView) -> Option<f64> {

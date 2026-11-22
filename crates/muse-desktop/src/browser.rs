@@ -5,7 +5,9 @@ use crate::{
     session_guard::{PageGate, ProfileBindings},
 };
 use muse_core::{AccountId, AccountNetwork, BrowserEvent, BrowserIdentity};
-use muse_proxy::{LocalAuth, ProxyBridge, Upstream};
+#[cfg(target_os = "windows")]
+use muse_proxy::LocalAuth;
+use muse_proxy::{ProxyBridge, Upstream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     cell::Cell,
@@ -526,6 +528,8 @@ impl BrowserPool {
                 .verify_namespace(identity.account_id, store_namespace, actual)?;
             if let Some(bridge) = &bridge {
                 macos::install_proxy(&view, bridge)?;
+            } else {
+                macos::clear_proxy(&view);
             }
             macos::set_theme(&view, self.display.get().theme);
         }

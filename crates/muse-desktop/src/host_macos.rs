@@ -8,8 +8,7 @@ use objc2::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 pub fn native_window(window: &Window) -> Result<Retained<AnyObject>, String> {
-    let handle = window
-        .window_handle()
+    let handle = HasWindowHandle::window_handle(window)
         .map_err(|_| "无法获取应用窗口")?
         .as_raw();
     let RawWindowHandle::AppKit(handle) = handle else {
@@ -40,7 +39,7 @@ pub fn pixel_matches(_: &Window, _: f32, _: f32, _: u32) -> Result<bool, String>
 
 pub fn hide_standard_controls(window: &Window) {
     if let Ok(native) = native_window(window) {
-        for kind in 0..3isize {
+        for kind in 0..3usize {
             let button: Option<Retained<AnyObject>> =
                 unsafe { msg_send![&*native, standardWindowButton: kind] };
             if let Some(button) = button {
