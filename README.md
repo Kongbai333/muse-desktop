@@ -2,6 +2,10 @@
 
 面向 Muse.ai 的非官方 Windows 多账号客户端，使用 Rust、GPUI 和 WebView2 构建。
 
+## 界面预览
+
+![Muse Desktop 界面：多账号侧栏、额度信息、标签页与 Muse 网页](assets/screenshots/desktop.png)
+
 ## 功能
 
 - 多账号独立浏览器环境、账号切换、标签页和登录状态保存。
