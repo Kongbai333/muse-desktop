@@ -36,4 +36,6 @@ Windows strict 复用 force_proxy=true；platform 复用 false。Mac 当前只�
 
 合成向量、Unicode/特殊字符、错误密码、篡改/格式/成本/重复字段/深度上限、引用/共享/新 ID、写入失败/取消/隔离、密文文件原子写入均有测试。Windows 原生 smoke 只用临时 profile 和本地 fixture；禁止真实 Muse/代理请求和真实用户凭据。Mac 未运行的构建/原生行为如实标为未验证。
 
-仅本地分支和必要本地提交；不推送、PR、合并、发布、变更版本或签名。保留原任务提交。无额外 PC worker。
+原实现阶段仅授权本地分支和必要提交，保留原任务提交，无额外 PC worker。
+
+2026-11-22 用户追加授权：双端均完成后推送功能分支并编译。PC 先提交完整 ready 证据，待协调者收齐双端并明确放行后普通推送，不 force、不合并 main、不建 tag、不做正式 Release，也不更改版本或签名。workflow_dispatch 由协调者对精确远端 HEAD 统一执行一次；本端继续负责 Windows 及两种 Mac CI 的必要修复。

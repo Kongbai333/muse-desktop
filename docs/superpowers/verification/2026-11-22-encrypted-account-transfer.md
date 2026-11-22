@@ -1,6 +1,6 @@
 # PC 加密账号迁移验证记录
 
-日期：2026-11-22。工作区：`D:/AI/muse-desktop`。分支：`feat/encrypted-account-transfer`。
+日期：2026-11-22 至 2026-11-23。工作区：`D:/AI/muse-desktop`。分支：`feat/encrypted-account-transfer`。
 
 ## 源码与本地提交
 
@@ -8,9 +8,20 @@
 - `f2638b9`：严格加密 codec、合成向量及实施计划。
 - `ef89f60`：候选账号/代理图、vault 分阶段写入、冻结规范原字节同步。
 - `c606c54`：原生 Cookie 快照、分阶段激活、异步导入导出 UI 与合成检查脚本。
-- **本轮受测产品源码提交：`8b1dd4f1f054b74414cfc17d251d257f95a04602`**：导航 ID 防旧回调、导入名称保留、本机地址提示与回归修复。验证文档后续单独提交，不改变该受测源码。
+- `8b1dd4f1f054b74414cfc17d251d257f95a04602`：导航 ID 防旧回调、导入名称保留、本机地址提示与回归修复。
+- **当前 ready 受测源码提交：`7beacc783f5435cfb31a9510d737ff44493b9dcf`**：CI 显示标识与现有 Mac smoke 的新适配器检查接入。下列受影响检查已在该源码上重新执行；最后的文档提交不再改变产品或脚本。
 
 相对基线未更改 workspace 版本、签名或发布流程。未推送、PR、合并或发布。工作区及本地分支保留。
+
+### 后续授权与构建追踪补充
+
+本地实现验证结束后，用户追加了“双端完成后推送并编译”的授权。当前先向协调者提交 ready，只有其收到双端证据并明确放行后才普通推送功能分支。尚未推送或 dispatch；不合并 main、不 force、不建 tag、不做正式 Release。
+
+`.github/workflows/build.yml` 仅新增可选 string 输入 `build_request_id`（空默认值）及显示用 `run-name`。输入不进入 shell、env 或任何 job；现有触发、权限、并发、构建、签名和发布条件均保持原值。协调者后续针对精确远端 HEAD 统一 dispatch 一次，实际 run/下载入口待该事件产生后记录，不猜测“最新 run”。
+
+追加验证：`py -3 .superpowers/check-workflow-trace.py`，四项 YAML/AST 合约检查 exit 0（新增前两项缺失断言 RED，新字段加入后全 GREEN），使用本机已有 PyYAML 6.0.3；完整比较除两项授权显示元数据外的 workflow 树与 `56a3a6d` 完全一致。原始日志见 `.superpowers/sdd/2026-11-22-encrypted-account-transfer/workflow-trace-{red,green}.log`。
+
+为让两种 Mac CI 实际触及新的原生适配器，现有 `check-macos-smoke.py` 在直连/认证代理路径加入 `--transfer-smoke-test`，并要求 7 项迁移报告标志全部为 true；独立诊断探针在 Release 中可用，默认运行不会开启，完整加密 UI 驱动仍仅在 debug 中编译。新增两项 Python 行为合约 RED→GREEN 后，现有 4 项打包合约加这 2 项共 6 项全部通过。workflow 的任何 job、触发器、权限、签名/发布条件均未改变。随后又在 `7beacc7` 上重跑下列 Rust/Windows 原生与脚本检查，不能把它称为已经在 Mac 运行成功。
 
 ## 协议与真实实现互解
 
@@ -40,7 +51,7 @@ Windows Rust/ring 0.17.14 实际消费 Java 固定及随机文件，解密明文
 | `node scripts/check-studio.cjs` | exit 0 |
 | `node scripts/check-original-media.cjs` | exit 0 |
 | `node scripts/check-reference-upload.cjs` | exit 0 |
-| `py -3 -m unittest discover -s tests -p test_macos_package.py` | exit 0；4 packaging contract tests，非 Mac 构建/运行 |
+| `py -3 -m unittest discover -s tests -p test_macos_package.py` | exit 0；4 packaging + 2 native smoke wiring/report contract tests，非 Mac 构建/运行 |
 | `./scripts/check-package.ps1` | exit 0；Windows packaging contract，非正式安装包 |
 | `py -3 -m py_compile scripts/check-account-transfer-native.py` | exit 0 |
 
@@ -52,10 +63,10 @@ Windows Rust/ring 0.17.14 实际消费 Java 固定及随机文件，解密明文
 
 | 路径 | 命令/证据 | 结果 |
 | --- | --- | --- |
-| 新迁移 UI，日间直连 | `py -3 scripts/check-account-transfer-native.py`；`.runtime/encrypted-transfer-native-5e6c_ymd/smoke-result.json` | exit 0 |
-| 新迁移 UI，夜间认证假代理 | `py -3 scripts/check-account-transfer-native.py --proxy --dark`；`.runtime/encrypted-transfer-native-5_9w7waw/smoke-result.json` | exit 0 |
-| 原 Cookie 登录直连回归 | `py -3 .superpowers/run-cookie-native.py`；`.runtime/cookie-native-xq72aoqm/smoke-result.json` | exit 0 |
-| 原 Cookie 登录认证假代理回归 | `py -3 .superpowers/run-cookie-native.py proxy`；`.runtime/cookie-native-hx2u9e8d/smoke-result.json` | exit 0 |
+| 新迁移 UI，日间直连 | `py -3 scripts/check-account-transfer-native.py`；`.runtime/encrypted-transfer-native-8o8ui97b/smoke-result.json` | exit 0 |
+| 新迁移 UI，夜间认证假代理 | `py -3 scripts/check-account-transfer-native.py --proxy --dark`；`.runtime/encrypted-transfer-native-0bn9wkw5/smoke-result.json` | exit 0 |
+| 原 Cookie 登录直连回归 | `py -3 .superpowers/run-cookie-native.py`；`.runtime/cookie-native-vglrc5y9/smoke-result.json` | exit 0 |
+| 原 Cookie 登录认证假代理回归 | `py -3 .superpowers/run-cookie-native.py proxy`；`.runtime/cookie-native-izvhmcmd/smoke-result.json` | exit 0 |
 
 后两项使用本机会话原有的 ignored Windows owned-window harness，调用 debug 程序的 `--cookie-import-smoke-test --transfer-smoke-test` 及对应的 `--smoke-test` / `--proxy-smoke-test`，每次显式指定临时 `--data-dir`。新迁移公共 runner 已提交到 `scripts/`，不依赖真实用户 profile。
 

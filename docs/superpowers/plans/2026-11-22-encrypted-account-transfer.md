@@ -15,7 +15,7 @@
 - Wire 以 Android owner 的 `docs/protocols/account-transfer-v1.md` 为唯一 authority；互解前不宣称冻结。
 - 保留旧 header 入口；不导出 bridge/vault blob/profile/revision，不读取真实数据。
 - 所有代理统一按静态配置；认证字段作为不透明文本原样迁移；指定代理失败不得 Direct。
-- 本地分支从 1dd9c72 增量，无远端操作，无版本/签名变动。
+- 从 1dd9c72 增量，无版本/签名变动。追加授权下，推送须等双端 ready 并经协调者明确放行；不得 force、合并 main、建 tag 或正式发布，CI dispatch 由协调者统一执行。
 - KDF/文件后台执行，敏感数据无日志、无明文临时文件。
 
 ## Review Focus
@@ -83,3 +83,25 @@
 - [x] Confirm Java→Rust and Rust→Java random-file hashes, all negative cases and exact-source evidence.
 - [x] Review full diff for secret/logging, stale callbacks, activation order, scope and wire consistency; fix material issues with RED/GREEN.
 - [x] Record actual Windows/Mac coverage, user acceptance boundary and local commit IDs. No remote action.
+
+### Task 6: 构建追踪元数据与双端 ready 屏障
+
+**Files:** Modify `.github/workflows/build.yml`; update this plan/spec/verification record.
+
+Additional necessary coverage: the existing Mac native script now enables the new adapter's isolated staging probe and verifies its mandatory report; Release compilation retains only that opt-in diagnostic probe. Full encrypted UI smoke remains debug-only. No new workflow/job/trigger is added.
+
+**Interfaces:** Optional workflow_dispatch string `build_request_id`, default empty; `run-name` displays the supplied ID or the ref. Input is never placed in shell commands. Existing triggers/jobs/permissions/signing/release behavior remains identical.
+
+- [x] Capture the existing workflow and write a focused YAML contract check; observe the two missing metadata assertions fail.
+- [x] Add only `workflow_dispatch.inputs.build_request_id` and the requested `run-name` expression.
+- [x] Run the four metadata/AST contracts and existing Mac/Windows packaging contracts, all exit 0.
+- [x] Wire the new native migration check into the existing Mac smoke; observe the two missing wiring/report tests fail, then pass all 6 Python contracts. Re-run release check, 144 Rust tests and four Windows native paths on `7beacc7`.
+- [x] Commit the metadata change locally and prepare full ready/HEAD/test evidence for the coordinator; do not push before the dual-end gate.
+
+### Task 7: 协调放行后推送与精确 CI 跟进
+
+**Status:** Waiting for coordinator notification after both endpoints are ready. Do not poll or dispatch independently.
+
+- [ ] Ordinary push of the approved feature branch after explicit gate release; verify exact remote HEAD without force or main/tag changes.
+- [ ] Coordinator dispatches the exact repo/workflow/ref once with a unique visible build_request_id; record exact run ID/URL.
+- [ ] Handle necessary failures for Windows x64 and Mac arm64/x64 until the matching commit's CI results settle; report actual artifact names/URLs and remaining real-device/identity boundaries.
