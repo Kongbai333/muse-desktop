@@ -142,6 +142,7 @@ pub struct MuseWindow {
     refresh_accounts: HashMap<AccountId, (muse_core::BrowserIdentity, Instant)>,
     studio: crate::studio::Studio,
     cookie_dialog: Option<crate::cookie_export::CookieDialog>,
+    cookie_logins: HashMap<AccountId, (muse_core::BrowserIdentity, Instant)>,
     account_context: Option<(AccountId, gpui::Point<Pixels>, TransitionState)>,
 }
 
@@ -364,6 +365,7 @@ impl MuseWindow {
             refresh_accounts: HashMap::new(),
             studio,
             cookie_dialog: None,
+            cookie_logins: HashMap::new(),
             account_context: None,
         }
     }
@@ -1061,6 +1063,7 @@ impl MuseWindow {
         {
             self.persist();
         }
+        changed |= self.poll_cookie_logins();
         changed |= self.tick_cookies(window, cx);
         self.tick_studio(window, cx);
         let refresh_count = self.refresh_accounts.len();
@@ -1691,6 +1694,25 @@ impl MuseWindow {
                         .is_some_and(|id| self.browsers.active_render_ready(id));
                 let render_check_passed = cfg!(target_os = "macos") || pixels_visible == Some(true);
                 let mut report = serde_json::json!({"passed":preserved && unknown && shared && follows_panels && hides_on_workspace && proxy_ok && render_check_passed && profile_verified && readiness_verified,"actual_profile_bindings_verified":profile_verified,"visible_views_passed_readiness":readiness_verified,"webview_pixels_visible":pixels_visible,"navigation_back":true,"navigation_forward":true,"independent_account_storage":true,"same_account_tabs_share_storage":shared,"opener_page_preserved":preserved,"quota_unknown_without_provider":unknown,"webview_follows_sidebar_and_inspector":follows_panels,"webview_hides_on_native_workspace":hides_on_workspace,"native_authenticated_upstream_requests":proxy_requests,"accounts":self.workspace.accounts.len()});
+                if std::env::args().any(|arg| arg == "--cookie-import-smoke-test") {
+                    report["cookie_import_proxy_requests_before"] =
+                        serde_json::json!(crate::proxy_smoke::authenticated_requests());
+                    match account_dialog::cookie_smoke::begin(self, window, cx) {
+                        Ok(original) => {
+                            report["cookie_import_isolated_and_private"] = serde_json::json!(true);
+                            report["cookie_import_proxy_route_preserved"] = serde_json::json!(true);
+                            smoke.edit_before = Some(original);
+                            smoke.edit_report = Some(report);
+                            smoke.stage = 12;
+                            self.smoke = Some(smoke);
+                            return;
+                        }
+                        Err(error) => {
+                            report["passed"] = serde_json::json!(false);
+                            report["cookie_import_error"] = serde_json::json!(error);
+                        }
+                    }
+                }
                 if std::env::args().any(|arg| arg == "--account-dialog-smoke-test") {
                     let passed = self.exercise_account_dialogs(window, cx);
                     report["account_dialog_cancel_save_create_remove"] = serde_json::json!(passed);
@@ -1822,6 +1844,45 @@ impl MuseWindow {
                 );
                 cx.quit();
                 return;
+            }
+            12 if self.account_dialog.is_none() => {
+                let ready = self
+                    .workspace
+                    .active_browser_identity()
+                    .is_some_and(|identity| {
+                        self.browsers.page_ready(identity)
+                            && self.ready_pages.contains_key(&identity.tab_id)
+                            && self
+                                .workspace
+                                .active_account()
+                                .and_then(|account| account.active_tab())
+                                .is_some_and(|tab| tab.title != "Muse" && !tab.loading)
+                    });
+                if ready {
+                    let sent = self
+                        .workspace
+                        .active_account()
+                        .and_then(|account| account.active_tab())
+                        .is_some_and(|tab| tab.title.starts_with("Cookie导入验证通过"));
+                    let mut report = smoke.edit_report.take().unwrap_or_default();
+                    let routed = report["cookie_import_proxy_requests_before"]
+                        .as_u64()
+                        .is_none_or(|before| {
+                            crate::proxy_smoke::authenticated_requests()
+                                .is_some_and(|after| after > before as usize)
+                        });
+                    let expected = report["accounts"].as_u64().unwrap_or(0) as usize;
+                    let restored = smoke.edit_before.is_some_and(|original| {
+                        account_dialog::cookie_smoke::finish(self, original, expected, window, cx)
+                    });
+                    report["cookie_import_cookie_sent_on_navigation"] = serde_json::json!(sent);
+                    report["cookie_import_expected_route_used"] = serde_json::json!(routed);
+                    report["cookie_import_original_account_restored"] = serde_json::json!(restored);
+                    report["passed"] =
+                        serde_json::json!(report["passed"] == true && sent && routed && restored);
+                    smoke.edit_report = Some(report);
+                    smoke.stage = 11;
+                }
             }
             11 if self.account_dialog.is_none() => {
                 let visible = self

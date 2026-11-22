@@ -46,7 +46,19 @@ pub fn start() -> std::io::Result<String> {
                 }
                 continue;
             }
-            let title = if path.starts_with("/next") {
+            let title = if path.starts_with("/cookie-login") {
+                let received = request
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("cookie"))
+                    .flat_map(|(_, value)| value.split(';'))
+                    .any(|pair| pair.trim() == "hatch_sess=muse-cookie-login-fixture");
+                if received {
+                    "Cookie导入验证通过"
+                } else {
+                    "Cookie未随请求发送"
+                }
+            } else if path.starts_with("/next") {
                 "第二个页面"
             } else if path.starts_with("/popup") {
                 "新标签页"
@@ -69,6 +81,27 @@ pub fn start() -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cookie_probe_requires_the_expected_cookie_in_the_navigation_request() {
+        let home = start().unwrap();
+        let url = url::Url::parse(&home).unwrap();
+        for (cookie, expected_title) in [
+            ("", "Cookie未随请求发送"),
+            (
+                "Cookie: hatch_sess=muse-cookie-login-fixture\r\n",
+                "Cookie导入验证通过",
+            ),
+            ("Cookie: hatch_sess=wrong-value\r\n", "Cookie未随请求发送"),
+        ] {
+            let mut stream =
+                std::net::TcpStream::connect(("127.0.0.1", url.port().unwrap())).unwrap();
+            stream.write_all(format!("GET /cookie-login HTTP/1.1\r\nHost: 127.0.0.1\r\n{cookie}Connection: close\r\n\r\n").as_bytes()).unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            assert!(response.contains(&format!("<title>{expected_title} · Muse</title>")));
+        }
+    }
+
     #[test]
     fn fragmented_http_headers_still_return_the_requested_page_without_resetting() {
         let home = start().unwrap();

@@ -166,9 +166,17 @@ fn forward(
     }
     let mut target = TcpStream::connect(("127.0.0.1", target_port))?;
     requests.fetch_add(1, Ordering::Relaxed);
+    // Preserve the synthetic account Cookie for the local navigation probe.
+    // Proxy-Authorization remains private to this fake upstream hop.
+    let cookie = header
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| name.eq_ignore_ascii_case("cookie"))
+        .map(|(_, value)| format!("Cookie: {}\r\n", value.trim()))
+        .collect::<String>();
     write!(
         target,
-        "GET {} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\nConnection: close\r\n\r\n",
+        "GET {} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\n{cookie}Connection: close\r\n\r\n",
         url.path()
     )?;
     std::io::copy(&mut target, &mut browser)?;

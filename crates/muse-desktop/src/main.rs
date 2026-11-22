@@ -5,6 +5,7 @@ mod account_settings;
 mod assets;
 mod browser;
 mod cookie_export;
+mod cookie_import;
 mod diagnostics;
 mod import;
 mod input;

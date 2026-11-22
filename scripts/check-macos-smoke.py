@@ -32,7 +32,8 @@ def check_run(binary, flag):
     with tempfile.TemporaryDirectory(prefix="muse-native-smoke-") as directory:
         root = pathlib.Path(directory)
         try:
-            subprocess.run([str(binary), flag, "--data-dir", str(root)], check=True, timeout=75)
+            extra = ["--cookie-import-smoke-test"] if flag in ("--smoke-test", "--proxy-smoke-test") else []
+            subprocess.run([str(binary), flag, *extra, "--data-dir", str(root)], check=True, timeout=75)
         except (subprocess.SubprocessError, OSError):
             if (root / "crash.log").exists():
                 print((root / "crash.log").read_text(errors="replace"))
@@ -46,6 +47,10 @@ def check_run(binary, flag):
         # DOM/profile checks inspected rendered macOS pixels.
         if report.get("webview_pixels_visible") is not None:
             raise SystemExit("Unexpected Windows pixel result in the macOS smoke report")
+        if flag in ("--smoke-test", "--proxy-smoke-test"):
+            for check in ("cookie_import_isolated_and_private", "cookie_import_cookie_sent_on_navigation", "cookie_import_original_account_restored", "cookie_import_proxy_route_preserved", "cookie_import_expected_route_used"):
+                if report.get(check) is not True:
+                    raise SystemExit(f"Native Cookie import failed: {check}")
         if flag == "--proxy-smoke-test" and not report.get("native_authenticated_upstream_requests"):
             raise SystemExit("WKWebView did not route through its authenticated proxy")
         if flag == "--proxy-edit-smoke-test":

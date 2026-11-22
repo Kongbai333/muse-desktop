@@ -151,14 +151,14 @@ pub fn remove(root: &Path, workspace: &mut Workspace, id: Uuid) -> Result<(), St
     Ok(())
 }
 
-pub fn save_account(
+pub fn prepare_account(
     root: &Path,
-    workspace: &mut Workspace,
+    workspace: &Workspace,
     owner: Option<AccountId>,
     name: &str,
     route: RouteChoice,
     force_proxy: bool,
-) -> Result<crate::account_settings::SavedAccount, String> {
+) -> Result<(Workspace, crate::account_settings::SavedAccount), String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 40 {
         return Err("账号名称需为 1–40 个字符".into());
@@ -199,11 +199,26 @@ pub fn save_account(
     if browser_changed {
         candidate.update_network(id, network, None)?;
     }
+    Ok((
+        candidate,
+        crate::account_settings::SavedAccount {
+            id,
+            browser_changed,
+        },
+    ))
+}
+
+pub fn save_account(
+    root: &Path,
+    workspace: &mut Workspace,
+    owner: Option<AccountId>,
+    name: &str,
+    route: RouteChoice,
+    force_proxy: bool,
+) -> Result<crate::account_settings::SavedAccount, String> {
+    let (candidate, saved) = prepare_account(root, workspace, owner, name, route, force_proxy)?;
     commit(root, workspace, candidate)?;
-    Ok(crate::account_settings::SavedAccount {
-        id,
-        browser_changed,
-    })
+    Ok(saved)
 }
 
 fn commit(root: &Path, workspace: &mut Workspace, candidate: Workspace) -> Result<(), String> {
@@ -215,6 +230,36 @@ fn commit(root: &Path, workspace: &mut Workspace, candidate: Workspace) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparing_an_import_keeps_existing_accounts_and_the_saved_workspace_unchanged() {
+        let (root, mut workspace) = fixture();
+        let first = workspace.add_account("existing");
+        workspace.save(&root.join("workspace.json")).unwrap();
+        let before = std::fs::read(root.join("workspace.json")).unwrap();
+        let (candidate, prepared) = prepare_account(
+            &root,
+            &workspace,
+            None,
+            "imported",
+            RouteChoice::System,
+            false,
+        )
+        .unwrap();
+        assert_eq!(workspace.accounts.len(), 1);
+        assert_eq!(workspace.active_account_id(), Some(first));
+        assert_eq!(candidate.accounts.len(), 2);
+        assert_ne!(prepared.id, first);
+        assert_eq!(candidate.active_account_id(), Some(prepared.id));
+        assert_eq!(std::fs::read(root.join("workspace.json")).unwrap(), before);
+        assert!(
+            !candidate
+                .account(prepared.id)
+                .unwrap()
+                .profile_dir(&root.join("profiles"))
+                .exists()
+        );
+    }
 
     fn fixture() -> (std::path::PathBuf, Workspace) {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

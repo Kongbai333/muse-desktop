@@ -9,6 +9,9 @@ use muse_proxy::ProxyProtocol;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+#[path = "cookie_smoke.rs"]
+pub(super) mod cookie_smoke;
+
 struct ConnectionResult {
     draft: ProxyDraft,
     result: Result<(), String>,
@@ -28,6 +31,7 @@ pub(super) struct AccountDialog {
     route: RouteChoice,
     picking: bool,
     name: Entity<TextInput>,
+    cookie: Entity<TextInput>,
     host: Entity<TextInput>,
     port: Entity<TextInput>,
     user: Entity<TextInput>,
@@ -65,6 +69,12 @@ impl AccountDialog {
             input.set_placeholder("输入名称");
             input
         });
+        let cookie = cx.new(|cx| {
+            let mut input = TextInput::new("", cx);
+            input.set_placeholder("hatch_sess=…; … 或 Cookie JSON");
+            input.set_secure(true, cx);
+            input
+        });
         let host = cx.new(|cx| {
             let mut input = TextInput::new(&draft.host, cx);
             input.set_placeholder("例如 127.0.0.1");
@@ -94,6 +104,7 @@ impl AccountDialog {
             route: RouteChoice::System,
             picking: false,
             name,
+            cookie,
             host,
             port,
             user,
@@ -162,6 +173,38 @@ impl AccountDialog {
 }
 
 impl MuseWindow {
+    pub(super) fn poll_cookie_logins(&mut self) -> bool {
+        use crate::cookie_import::{LoginOutcome, login_outcome};
+        let finished = self
+            .cookie_logins
+            .iter()
+            .filter_map(|(id, (identity, started))| {
+                if !self.workspace.contains_identity(*identity) {
+                    return Some((*id, None));
+                }
+                let account = self.workspace.account(*id)?;
+                login_outcome(&account.quota, started.elapsed().as_millis() as u64)
+                    .map(|outcome| (*id, Some(outcome)))
+            })
+            .collect::<Vec<_>>();
+        for (id, outcome) in &finished {
+            self.cookie_logins.remove(id);
+            if self.workspace.active_account_id() == Some(*id) {
+                self.status = match outcome {
+                    Some(LoginOutcome::Confirmed) => "Cookie 登录已确认".into(),
+                    Some(LoginOutcome::Rejected) => {
+                        "Cookie 登录未生效，可能已过期或不适用于当前环境，请重新导出".into()
+                    }
+                    Some(LoginOutcome::Unconfirmed) => {
+                        "Cookie 已导入，暂未确认登录状态；请查看网页，如仍需登录请重新导出".into()
+                    }
+                    None => continue,
+                };
+            }
+        }
+        !finished.is_empty()
+    }
+
     pub(super) fn exercise_account_dialogs(
         &mut self,
         window: &mut Window,
@@ -303,6 +346,7 @@ impl MuseWindow {
         let Some(generation) = dialog.transition.begin_exit() else {
             return;
         };
+        dialog.cookie.update(cx, |input, cx| input.set_text("", cx));
         window.focus(&self.focus);
         self.schedule_overlay_removal(
             MotionKind::Modal,
@@ -393,6 +437,27 @@ impl MuseWindow {
             self.close_account_dialog(window, cx);
             return;
         }
+        if owner.is_none() {
+            let text = Zeroizing::new(dialog.cookie.read(cx).text());
+            if !text.trim().is_empty() {
+                let result = crate::cookie_import::parse(
+                    &text,
+                    &self.home,
+                    (crate::page_observer::now_ms() / 1000) as i64,
+                )
+                .map_err(str::to_owned)
+                .and_then(|cookies| {
+                    self.create_cookie_account(&name, route, force, cookies, window, cx)
+                });
+                if let Err(error) = result {
+                    if let Some(dialog) = self.account_dialog.as_mut() {
+                        dialog.message = error;
+                    }
+                }
+                cx.notify();
+                return;
+            }
+        }
         match proxy_pool::save_account(
             &self.data_dir,
             &mut self.workspace,
@@ -429,6 +494,60 @@ impl MuseWindow {
             Err(error) => self.account_dialog.as_mut().unwrap().message = error,
         }
         cx.notify();
+    }
+
+    fn create_cookie_account(
+        &mut self,
+        name: &str,
+        route: RouteChoice,
+        force: bool,
+        cookies: crate::cookie_import::CookieImport,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let (mut candidate, saved) =
+            proxy_pool::prepare_account(&self.data_dir, &self.workspace, None, name, route, force)?;
+        let identity = candidate
+            .active_browser_identity()
+            .ok_or("无法准备新账号")?;
+        candidate.apply_browser_event(identity, BrowserEvent::Url(self.home.clone()));
+        let account = candidate.account(saved.id).ok_or("无法准备新账号")?;
+        let profile = account.profile_dir(&self.data_dir.join("profiles"));
+        self.browsers.stage_cookie_import(
+            BrowserRequest {
+                identity,
+                url: "about:blank",
+                profile: &profile,
+                network: account.network,
+                proxy_credentials: candidate.proxy_credentials(account),
+                diagnostic_origin: self.diagnostic_origin.as_deref(),
+            },
+            &cookies,
+            window,
+            self.browser_bounds(window),
+        )?;
+        if let Err(error) = candidate.save(&self.data_dir.join("workspace.json")) {
+            self.browsers.discard_cookie_import(identity, &cookies);
+            return Err(error);
+        }
+        self.workspace = candidate;
+        self.show_start_page = false;
+        self.navigation_transition = TransitionState::entering();
+        self.proxy_editor.owner = None;
+        self.sync_fields(cx);
+        self.status = match self.browsers.activate_cookie_import(identity, &self.home) {
+            Ok(()) => {
+                self.cookie_logins
+                    .insert(saved.id, (identity, Instant::now()));
+                "Cookie 已导入，正在由 Muse 确认登录状态".into()
+            }
+            Err(error) => {
+                self.browsers.invalidate_account(saved.id);
+                error
+            }
+        };
+        self.close_account_dialog(window, cx);
+        Ok(())
     }
     pub(super) fn poll_account_dialog(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(dialog) = self.account_dialog.as_mut().filter(|dialog| {
@@ -1254,52 +1373,68 @@ impl MuseWindow {
             .gap_4()
             .when(drawer, |element| element.px_4().py_4())
             .when(!drawer, |element| element.px_6().pt_3().pb_2());
-        body = match dialog.screen {
-            Some(PoolScreen::List) => body.child(self.render_pool_list(cx)),
-            Some(PoolScreen::Edit(_)) => body
-                .child(dialog_field("代理名称", dialog.name.clone()))
-                .child(self.render_proxy_form(dialog, cx)),
-            Some(PoolScreen::Remove(_)) => body.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .text_color(rgb(colors().text))
-                            .child(format!("确认删除「{}」？", dialog.name.read(cx).text())),
+        body =
+            match dialog.screen {
+                Some(PoolScreen::List) => body.child(self.render_pool_list(cx)),
+                Some(PoolScreen::Edit(_)) => body
+                    .child(dialog_field("代理名称", dialog.name.clone()))
+                    .child(self.render_proxy_form(dialog, cx)),
+                Some(PoolScreen::Remove(_)) => body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .text_color(rgb(colors().text))
+                                .child(format!("确认删除「{}」？", dialog.name.read(cx).text())),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(rgb(colors().secondary))
+                                .child("只能删除没有账号使用的代理。"),
+                        ),
+                ),
+                None if dialog.removing => body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .text_color(rgb(colors().text))
+                                .child(format!("确认移除「{}」？", dialog.name.read(cx).text())),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(19.))
+                                .text_color(rgb(colors().secondary))
+                                .child(
+                                    "账号的浏览器数据和登录状态会保留在本机，之后可以重新导入。",
+                                ),
+                        ),
+                ),
+                None => {
+                    body.child(dialog_field("账号名称", dialog.name.clone()))
+                        .when(dialog.owner.is_none(), |element| {
+                            element.child(
+                        div().flex().flex_col().gap_1()
+                            .child(dialog_field("Cookie 登录（可选）", dialog.cookie.clone()))
+                            .child(div().text_size(px(11.)).line_height(px(17.))
+                                .text_color(rgb(colors().secondary))
+                                .child("支持单账号 Cookie 文本或浏览器 JSON，留空则正常登录。"))
+                            .child(div().text_size(px(11.)).line_height(px(17.))
+                                .text_color(rgb(colors().secondary))
+                                .child("Cookie 不含代理；如原账号使用代理，请先选择同一条网络连接。")),
                     )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(rgb(colors().secondary))
-                            .child("只能删除没有账号使用的代理。"),
-                    ),
-            ),
-            None if dialog.removing => body.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .text_color(rgb(colors().text))
-                            .child(format!("确认移除「{}」？", dialog.name.read(cx).text())),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .line_height(px(19.))
-                            .text_color(rgb(colors().secondary))
-                            .child("账号的浏览器数据和登录状态会保留在本机，之后可以重新导入。"),
-                    ),
-            ),
-            None => body
-                .child(dialog_field("账号名称", dialog.name.clone()))
-                .child(self.render_dialog_network(dialog, cx)),
-        };
+                        })
+                        .child(self.render_dialog_network(dialog, cx))
+                }
+            };
         if !dialog.message.is_empty() && !matches!(dialog.screen, Some(PoolScreen::Edit(_))) {
             body = body.child(
                 div()

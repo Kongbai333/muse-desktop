@@ -336,6 +336,81 @@ impl BrowserPool {
         result
     }
 
+    /// Import only into a newly-created, isolated about:blank account view.
+    /// The caller commits the new account only after native read-back succeeds.
+    pub fn stage_cookie_import(
+        &mut self,
+        request: BrowserRequest<'_>,
+        cookies: &crate::cookie_import::CookieImport,
+        window: &gpui::Window,
+        bounds: Rect,
+    ) -> Result<(), String> {
+        let identity = request.identity;
+        if request.url != "about:blank" || self.tabs.contains_key(&identity.tab_id) {
+            return Err("只能将 Cookie 导入新账号的独立环境".into());
+        }
+        if let Err(error) = self.ensure_reader(request, window, bounds) {
+            self.invalidate_account(identity.account_id);
+            return Err(error);
+        }
+        let result = (|| {
+            let view = self.view(identity.tab_id).ok_or("无法准备账号浏览器")?;
+            for item in &cookies.items {
+                let cookie = item.native()?;
+                view.set_cookie(&cookie)
+                    .map_err(|_| "原生浏览器未能写入 Cookie，新账号未保存")?;
+            }
+            let actual = view
+                .cookies()
+                .map_err(|_| "无法核验已写入的 Cookie，新账号未保存")?;
+            if !cookies
+                .items
+                .iter()
+                .all(|item| actual.iter().any(|cookie| item.matches(cookie)))
+            {
+                return Err("浏览器未完整接受 Cookie，请重新导出此账号的 Cookie".into());
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.discard_cookie_import(identity, cookies);
+        }
+        result
+    }
+
+    pub fn discard_cookie_import(
+        &mut self,
+        identity: BrowserIdentity,
+        cookies: &crate::cookie_import::CookieImport,
+    ) {
+        if self.is_cookie_reader(identity) {
+            if let Some(view) = self.view(identity.tab_id) {
+                for item in &cookies.items {
+                    if let Ok(cookie) = item.native() {
+                        let _ = view.delete_cookie(&cookie);
+                    }
+                }
+            }
+            self.invalidate_account(identity.account_id);
+        }
+    }
+
+    pub fn activate_cookie_import(
+        &mut self,
+        identity: BrowserIdentity,
+        url: &str,
+    ) -> Result<(), String> {
+        if !self.cookie_only.remove(&identity) {
+            return Err("账号的 Cookie 导入环境已改变".into());
+        }
+        self.background.remove(&identity);
+        self.last_active.set(None);
+        self.view(identity.tab_id)
+            .ok_or("账号浏览器已关闭")?
+            .load_url(url)
+            .map_err(|_| "Cookie 已保存，网页暂时无法打开，请刷新重试".into())
+    }
+
     fn ensure_inner(
         &mut self,
         request: BrowserRequest<'_>,
