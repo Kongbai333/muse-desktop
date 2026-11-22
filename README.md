@@ -60,6 +60,10 @@ git push origin v0.1.1
 
 手机端是独立的 `muse-android` 仓库。两个客户端各自保存账号和历史，不自动同步。
 
+## 社区致谢
+
+感谢 [LINUX DO](https://linux.do/) 社区的交流与分享。本项目认可并支持 LINUX DO 社区的开源交流与互助。
+
 ## 许可证
 
 原创代码采用 MIT。适配自 GPUI 的输入组件保留 Apache-2.0 许可，Tabler 图标和
