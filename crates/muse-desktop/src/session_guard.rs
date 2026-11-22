@@ -70,6 +70,8 @@ pub struct PageGate {
     started: u64,
     first_content: Option<u64>,
     failed: bool,
+    native_failure_status: Option<i32>,
+    latest_native_navigation: Option<u64>,
 }
 impl PageGate {
     pub fn navigate(&mut self, now: u64) -> u64 {
@@ -78,6 +80,7 @@ impl PageGate {
         self.first_content = None;
         self.started = now;
         self.failed = false;
+        self.native_failure_status = None;
         self.epoch
     }
     pub fn epoch(&self) -> u64 {
@@ -115,14 +118,60 @@ impl PageGate {
         self.failed = true;
         self.ready = false;
     }
+    #[cfg(any(target_os = "windows", test))]
+    pub fn native_navigation_started(&mut self, id: u64) {
+        self.latest_native_navigation = Some(id);
+    }
+    #[cfg(any(target_os = "windows", test))]
+    pub fn fail_navigation(&mut self, id: u64, status: i32) -> bool {
+        if self.latest_native_navigation != Some(id) {
+            return false;
+        }
+        self.fail();
+        self.native_failure_status = Some(status);
+        true
+    }
     pub fn diagnostics(&self, now: u64) -> serde_json::Value {
-        serde_json::json!({"epoch":self.epoch,"ready":self.ready,"failed":self.failed,"content_seen":self.first_content.is_some(),"elapsed_ms":now.saturating_sub(self.started)})
+        serde_json::json!({"epoch":self.epoch,"ready":self.ready,"failed":self.failed,"content_seen":self.first_content.is_some(),"elapsed_ms":now.saturating_sub(self.started),"native_failure_status":self.native_failure_status})
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_late_failure_from_old_native_navigation_cannot_poison_current_readiness() {
+        let mut gate = PageGate::default();
+        gate.navigate(100);
+        gate.native_navigation_started(10);
+        let current = gate.navigate(200);
+        gate.native_navigation_started(11);
+        assert!(!gate.fail_navigation(10, 12));
+        assert!(gate.observe(current, true, 250));
+        assert!(gate.observe(current, true, 400));
+        assert!(gate.ready());
+        assert!(gate.fail_navigation(11, 12));
+        assert!(!gate.ready());
+    }
+
+    #[test]
+    fn native_id_guard_requires_registration_before_it_can_distinguish_the_new_navigation() {
+        // This documents the STA handler ordering boundary, not an observed WebView2 interleaving.
+        let mut gate = PageGate::default();
+        gate.navigate(100);
+        gate.native_navigation_started(10);
+        let current = gate.navigate(200);
+        assert!(gate.fail_navigation(10, 12));
+        gate.native_navigation_started(11);
+        assert!(!gate.observe(current, true, 400));
+        // A real new navigation, rather than an ID assignment, resets document readiness.
+        let next = gate.navigate(500);
+        gate.native_navigation_started(12);
+        assert!(gate.observe(next, true, 600));
+        assert!(gate.observe(next, true, 750));
+        assert!(gate.ready());
+    }
 
     #[test]
     fn persistent_native_stores_reject_a_wrong_or_shared_account_namespace() {

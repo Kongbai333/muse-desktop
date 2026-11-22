@@ -19,7 +19,7 @@ use std::{
 use webview2_com::{
     BasicAuthenticationRequestedEventHandler,
     Microsoft::Web::WebView2::Win32::{ICoreWebView2_10, ICoreWebView2Environment7},
-    NavigationCompletedEventHandler, take_pwstr,
+    NavigationCompletedEventHandler, NavigationStartingEventHandler, take_pwstr,
 };
 #[cfg(target_os = "windows")]
 use windows::core::{HSTRING, Interface, PWSTR};
@@ -1322,6 +1322,23 @@ fn install_navigation_errors(
     sender: Sender<BrowserMessage>,
     gate: Arc<Mutex<PageGate>>,
 ) -> Result<(), String> {
+    let start_gate = gate.clone();
+    let starting = NavigationStartingEventHandler::create(Box::new(move |_, args| {
+        if let Some(args) = args {
+            let mut id = 0;
+            unsafe {
+                args.NavigationId(&mut id)?;
+            }
+            start_gate.lock().unwrap().native_navigation_started(id);
+        }
+        Ok(())
+    }));
+    let mut starting_token = 0;
+    unsafe {
+        view.webview()
+            .add_NavigationStarting(&starting, &mut starting_token)
+    }
+    .map_err(|_| "无法注册网页导航状态回调")?;
     let callback = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
         if let Some(args) = args {
             let mut success = Default::default();
@@ -1336,7 +1353,17 @@ fn install_navigation_errors(
                 if status.0 == 14 {
                     return Ok(());
                 }
-                gate.lock().unwrap().fail();
+                let mut navigation_id = 0;
+                unsafe {
+                    args.NavigationId(&mut navigation_id)?;
+                }
+                if !gate
+                    .lock()
+                    .unwrap()
+                    .fail_navigation(navigation_id, status.0)
+                {
+                    return Ok(());
+                }
                 let _ = sender.send(BrowserMessage::State(
                     identity,
                     BrowserEvent::Error(format!(

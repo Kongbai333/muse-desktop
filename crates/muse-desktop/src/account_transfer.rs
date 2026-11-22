@@ -338,7 +338,7 @@ pub fn decode_payload(bytes: &[u8]) -> Result<Payload, TransferError> {
     Ok(payload)
 }
 fn valid_name(value: &str) -> bool {
-    !value.is_empty()
+    !value.trim().is_empty()
         && value.len() <= 512
         && value.chars().count() <= 128
         && !value.chars().any(char::is_control)
@@ -437,6 +437,7 @@ pub fn validate(payload: &Payload, now: i64) -> Result<(), TransferError> {
             check(coverage.contains(cookie.source_url.as_str()))?;
             let source_host = source.host_str().ok_or(TransferError::Payload)?;
             let domain = cookie.domain.as_deref().unwrap_or(source_host);
+            check(!(cookie.domain.is_none() && cookie.host_only == Some(false)))?;
             check(matches!(
                 domain,
                 "muse.ai" | ".muse.ai" | "www.muse.ai" | ".www.muse.ai"

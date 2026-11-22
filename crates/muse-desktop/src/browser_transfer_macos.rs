@@ -110,6 +110,8 @@ pub(super) fn write(
         text("Path", &item.path);
         text("Secure", if item.secure { "TRUE" } else { "FALSE" });
         text("HttpOnly", if item.http_only { "TRUE" } else { "FALSE" });
+        // Matches Wry 0.57.1's Foundation dictionary mapping. macOS native read-back is mandatory;
+        // Windows tests do not establish that these properties are accepted by WKHTTPCookieStore.
         if let Some(site) = item.same_site {
             text("SameSite", &site.to_string().to_ascii_lowercase());
         }

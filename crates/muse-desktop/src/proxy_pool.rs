@@ -76,8 +76,14 @@ pub fn save(
     name: &str,
     draft: &ProxyDraft,
 ) -> Result<Vec<AccountId>, String> {
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > 48 || name.chars().any(char::is_control) {
+    let preserving_name = existing
+        .and_then(|id| workspace.proxy_profile(id))
+        .is_some_and(|p| p.name == name);
+    let name = if preserving_name { name } else { name.trim() };
+    if name.trim().is_empty()
+        || name.chars().count() > if preserving_name { 128 } else { 48 }
+        || name.chars().any(char::is_control)
+    {
         return Err("代理名称需为 1–48 个字符".into());
     }
     let value = draft.proxy_url()?;
@@ -159,8 +165,11 @@ pub fn prepare_account(
     route: RouteChoice,
     force_proxy: bool,
 ) -> Result<(Workspace, crate::account_settings::SavedAccount), String> {
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > 40 {
+    let preserving_name = owner
+        .and_then(|id| workspace.account(id))
+        .is_some_and(|a| a.name == name);
+    let name = if preserving_name { name } else { name.trim() };
+    if name.trim().is_empty() || name.chars().count() > if preserving_name { 128 } else { 40 } {
         return Err("账号名称需为 1–40 个字符".into());
     }
     let network = match route {
@@ -190,7 +199,9 @@ pub fn prepare_account(
     let mut candidate = workspace.clone();
     let id = match owner {
         Some(id) => {
-            candidate.rename_account(id, name)?;
+            if !preserving_name {
+                candidate.rename_account(id, name)?;
+            }
             id
         }
         None => candidate.add_account(name),

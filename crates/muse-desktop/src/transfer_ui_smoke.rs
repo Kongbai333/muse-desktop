@@ -256,7 +256,7 @@ impl MuseWindow {
                         let states:Vec<_>=accounts.iter().map(|a|{let id=muse_core::BrowserIdentity{account_id:a.id,tab_id:a.active_tab_id(),generation:a.tabs[0].generation};serde_json::json!({"identity_current":self.workspace.contains_identity(id),"reader":self.browsers.is_cookie_reader(id),"gate":self.browsers.readiness_diagnostics(id),"observer":self.browsers.observer_flags(id),"requests":self.browsers.request_count(a.id),"pending_identity_check":self.cookie_logins.contains_key(&a.id)})}).collect();
                         return Err(format!(
                             "synthetic readiness diagnostics: {}",
-                            serde_json::to_string(&states).unwrap()
+                            serde_json::json!({"pages":states,"upstream":crate::proxy_smoke::diagnostics()})
                         ));
                     }
                     return Ok(());

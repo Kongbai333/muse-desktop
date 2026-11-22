@@ -77,6 +77,12 @@ impl ImportPlan {
             vault: None,
         };
         let mut references = HashMap::new();
+        if !payload.proxies.is_empty() {
+            plan.warnings.push(
+                "本机地址旁路规则可能随平台变化，将按目标设备实际策略运行，不保证与来源逐项相同。"
+                    .into(),
+            );
+        }
         for proxy in &payload.proxies {
             let display_host = if proxy.host.contains(':') {
                 format!("[{}]", proxy.host)
@@ -115,6 +121,7 @@ impl ImportPlan {
             }
         }
         let mut fragment = Workspace::new();
+        let mut unknown_cookie_attributes = false;
         for account in payload.accounts {
             let id = fragment.add_account(&account.name);
             let network = if account.network.mode == "system" {
@@ -160,9 +167,17 @@ impl ImportPlan {
                         || c.session.is_none()
                 })
             {
-                plan.warnings.push(format!("「{}」含未知 Cookie 属性：缺少域/路径时映射为来源 HTTPS 主机与根路径；未知 Secure 设为开启，未知 HttpOnly 仅对登录 Cookie 开启，未知 SameSite 使用浏览器默认；缺少有效期时按会话处理，不延长已知有效期；host-only 保真度未知。", local.name));
+                unknown_cookie_attributes = true;
             }
             plan.cookies.insert(id, account.cookies);
+        }
+        if unknown_cookie_attributes {
+            plan.warnings.extend([
+                "部分 Cookie 属性未知：缺少域或路径时，使用来源 HTTPS 主机与根路径。".into(),
+                "未知 Secure 开启；未知 HttpOnly 仅对登录 Cookie 开启。".into(),
+                "未知 SameSite 使用浏览器默认；缺少有效期按会话处理，已有期限不延长。".into(),
+                "host-only 保真度未知；不能保证与源浏览器的所有 Cookie 行为一致。".into(),
+            ]);
         }
         plan.accounts = fragment.accounts;
         Ok(plan)
@@ -259,15 +274,17 @@ fn wire_proxy_draft(proxy: &wire::Proxy) -> Result<ProxyDraft, String> {
     })
 }
 fn device_address(host: &str) -> bool {
-    let local = host.to_ascii_lowercase();
+    let local = host.trim_end_matches('.').to_ascii_lowercase();
     if local == "localhost"
         || local.ends_with(".localhost")
         || local.ends_with(".local")
+        || local.ends_with(".lan")
+        || local.ends_with(".home.arpa")
         || !local.contains(['.', ':'])
     {
         return true;
     }
-    match host.parse::<std::net::IpAddr>() {
+    match local.parse::<std::net::IpAddr>() {
         Ok(std::net::IpAddr::V4(ip)) => {
             ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
         }
@@ -276,6 +293,9 @@ fn device_address(host: &str) -> bool {
                 || ip.is_unique_local()
                 || ip.is_unicast_link_local()
                 || ip.is_unspecified()
+                || ip.to_ipv4_mapped().is_some_and(|v4| {
+                    v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
+                })
         }
         _ => false,
     }

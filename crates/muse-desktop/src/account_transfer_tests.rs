@@ -196,6 +196,8 @@ fn validates_references_and_scope_without_decoding_opaque_values() {
         "missing-session",
         "invalid-host",
         "unknown-expiry",
+        "ambiguous-domain-scope",
+        "whitespace-name",
         "duplicate-cookie",
     ] {
         let mut value: serde_json::Value =
@@ -212,6 +214,11 @@ fn validates_references_and_scope_without_decoding_opaque_values() {
             "unknown-expiry" => {
                 value["accounts"][0]["cookies"]["items"][0]["session"] = true.into()
             }
+            "ambiguous-domain-scope" => {
+                value["accounts"][0]["cookies"]["items"][0]["domain"] = serde_json::Value::Null;
+                value["accounts"][0]["cookies"]["items"][0]["host_only"] = false.into();
+            }
+            "whitespace-name" => value["accounts"][0]["name"] = "   ".into(),
             _ => {
                 let cookie = value["accounts"][0]["cookies"]["items"][0].clone();
                 value["accounts"][0]["cookies"]["items"]

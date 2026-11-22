@@ -11,12 +11,15 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--proxy', action='store_true')
+parser.add_argument('--dark', action='store_true')
 args = parser.parse_args()
 if sys.platform != 'win32':
     raise SystemExit('This runner verifies Windows only; it is not a macOS test.')
 repo = Path(__file__).resolve().parents[1]
 (repo / '.runtime').mkdir(exist_ok=True)
 root = Path(tempfile.mkdtemp(prefix='encrypted-transfer-native-', dir=repo / '.runtime'))
+if args.dark:
+    (root / 'display.json').write_text(json.dumps({'theme':'dark','page_zoom':1.0}), encoding='utf-8')
 startup = subprocess.STARTUPINFO()
 startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 startup.wShowWindow = subprocess.SW_HIDE

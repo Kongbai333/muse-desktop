@@ -27,7 +27,7 @@ macOS 版要求 macOS 14 或更新版本：Apple 芯片选择 `macos-arm64.app.z
 `Muse.exe --data-dir "原数据目录"` 沿用账号和历史；升级时不要删除该目录。
 安装包不包含开发者的账号、Cookie、代理凭据或聊天数据。
 
-macOS 的配置目录是 `~/Library/Application Support/MuseDesktopNext`；每个账号使用独立的 WebKit 持久化存储，代理凭据保存到登录钥匙串。Windows 的浏览器登录目录与 DPAPI 凭据不能直接复制为 Mac 登录环境，需要在 Mac 上重新登录和配置代理。Mac 暂不提供 WebView2 的后台页面休眠能力。
+macOS 的配置目录是 `~/Library/Application Support/MuseDesktopNext`；每个账号使用独立的 WebKit 持久化存储，代理凭据保存到登录钥匙串。Windows 的浏览器目录与 DPAPI 凭据不能直接复制为 Mac 登录环境；应使用下文的加密迁移入口，或在 Mac 上重新登录和配置代理。Mac 暂不提供 WebView2 的后台页面休眠能力。
 
 ## 导入 Cookie 登录
 
@@ -38,6 +38,20 @@ macOS 的配置目录是 `~/Library/Application Support/MuseDesktopNext`；每�
 Cookie 输入默认掩码显示，取消或创建成功后清空，不写入账号元数据。一次只导入一个账号，不覆盖已有账号。缺少有效 `hatch_sess`、格式不符或已过期时会提示；网站拒绝会话时仍需重新登录后导出。
 
 浏览器 JSON 会保留提供的有效期和安全标记；纯 Cookie 请求头没有这些完整属性，有效期缺失时按会话 Cookie 导入，不会延长服务端会话。原有「提取 Cookie」与 muse2api 文本格式保持兼容；此入口尚不是包含代理的跨端账号迁移包。
+
+## 加密账号与静态代理迁移（开发分支）
+
+1. 在账号菜单选择「导出账号与静态代理」，勾选账号，输入并确认迁移密码，保存 `.muse-account` 文件。
+2. 在另一设备选择「导入加密账号包」，选择文件并输入原密码；解密后核对账号、代理地址和路由/Cookie 差异，勾选确认后导入。
+3. 程序为账号、代理、浏览器 profile 和本地凭据生成新身份；同包共享代理保持共享，不覆盖已有账号。全部路由与 Cookie 核验完成后，才保存并打开网页确认会话。
+
+账号名、Cookie、实际上游代理认证和绑定关系位于同一加密负载；迁移密码不保存到配置或日志，迁移过程不生成临时明文文件。密码保留 UTF-8 原字符、大小写、空格和换行；请自行保存，通过不同渠道传递文件与密码。所有代理统一按静态配置处理，不提供出口 IP 检测或锁定。
+
+系统网络、本机/局域网节点和不同平台的本机地址旁路规则需要在预览中确认。源端未知的 Cookie 属性会明确说明目标映射；原生浏览器若未保留有效期或安全属性，整批账号不会激活。成功写入不代表真实身份有效，网站仍可能要求重新登录。
+
+跨端文件采用共同冻结的 v1 协议，Windows Rust 与 Java/JCA 已完成双向合成文件互解；这不等于 Android 设备、Mac 原生功能或真实账号登录验收通过。Mac adapter 保留按能力校验和拒绝路径，尚需在 Mac 上构建并运行原生验证。该分支未自动发布。
+
+Windows 合成检查：`cargo test --workspace --locked`，构建 debug 程序后运行 `py -3 scripts/check-account-transfer-native.py` 和 `py -3 scripts/check-account-transfer-native.py --proxy --dark`。检查只创建临时诊断账号和本地假代理，系统文件选择结果由测试注入，不访问真实 Muse 或真实代理。
 
 ## 从源码构建
 

@@ -1,4 +1,55 @@
 use super::*;
+#[test]
+fn device_related_routes_are_warned_without_resolving_or_rewriting_them() {
+    for host in [
+        "localhost",
+        "LOCALHOST.",
+        "node.lan",
+        "node.home.arpa",
+        "10.2.3.4",
+        "::1",
+        "::ffff:127.0.0.1",
+    ] {
+        let mut p = payload();
+        p.proxies[0].host = host.into();
+        let plan = ImportPlan::prepare(p, TargetPlatform::Windows, 1_800_000_000).unwrap();
+        assert!(
+            plan.warnings.iter().any(|w| w.contains("本机或局域网")),
+            "{host}"
+        );
+        assert!(plan.proxy_previews.iter().any(|p| p.contains(host)));
+    }
+}
+#[test]
+fn editing_imported_routes_preserves_unchanged_long_names_instead_of_truncating_them() {
+    let root = root();
+    std::fs::create_dir_all(&root).unwrap();
+    let mut payload = payload();
+    payload.accounts[0].name = format!("  {}  ", "迁".repeat(60));
+    payload.proxies[0].name = format!("  {}  ", "节".repeat(60));
+    let name = payload.accounts[0].name.clone();
+    let proxy_name = payload.proxies[0].name.clone();
+    let mut plan = ImportPlan::prepare(payload, TargetPlatform::Windows, 1_800_000_000).unwrap();
+    plan.confirm();
+    plan.stage_vault(&root).unwrap();
+    let id = plan.accounts[0].id;
+    plan.mark_staged(id).unwrap();
+    let mut workspace = plan.commit(&root, &muse_core::Workspace::new()).unwrap();
+    let proxy = workspace.proxy_profiles[0].id;
+    let draft = crate::proxy_pool::load(&root, &workspace.proxy_profiles[0]).unwrap();
+    crate::proxy_pool::save(&root, &mut workspace, Some(proxy), &proxy_name, &draft).unwrap();
+    crate::proxy_pool::save_account(
+        &root,
+        &mut workspace,
+        Some(id),
+        &name,
+        crate::proxy_pool::RouteChoice::Pool(proxy),
+        true,
+    )
+    .unwrap();
+    assert_eq!(workspace.account(id).unwrap().name, name);
+    assert_eq!(workspace.proxy_profiles[0].name, proxy_name);
+}
 fn payload() -> crate::account_transfer::Payload {
     crate::account_transfer::decode_payload(include_bytes!(
         "../../../checks/fixtures/account-transfer-v1/payload.json"
