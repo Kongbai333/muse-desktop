@@ -1,6 +1,6 @@
-# Muse Account Transfer v1 — wire candidate, review before shared freeze
+# Muse Account Transfer v1 — frozen 2026-11-22
 
-This document is the sole v1 wire authority for Android and PC. Candidate becomes frozen when both implementations reproduce the fixtures and exchange generated packages; no client may publish a divergent v1. All fixture credentials are synthetic.
+This document is the sole frozen v1 wire authority for Android and PC. Java JCA and Rust ring reproduced the independent fixtures and consumed each other's newly generated Unicode packages on 2026-11-22; evidence is in the fixture interoperability record. No client may publish a divergent v1. All fixture credentials are synthetic. This freeze does not claim Android-device or real-account validation.
 
 ## 1. Encrypted envelope
 

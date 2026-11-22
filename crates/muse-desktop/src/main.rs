@@ -32,6 +32,7 @@ mod studio;
 mod studio_image;
 mod studio_reference;
 mod theme;
+mod transfer_plan;
 mod ui;
 mod window_state;
 #[cfg(target_os = "windows")]

@@ -207,6 +207,15 @@ pub struct Account {
     pub proxy_revision: Option<Uuid>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub legacy_proxy_migrated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_origin: Option<TransferOrigin>,
+}
+
+/// Migration provenance only; AccountNetwork and the platform adapter remain authoritative.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransferOrigin {
+    pub bypass_policy: String,
+    pub source_force_proxy: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,6 +338,7 @@ impl Workspace {
             legacy_id: None,
             proxy_revision: None,
             legacy_proxy_migrated: false,
+            transfer_origin: None,
         });
         self.active_account = Some(id);
         id

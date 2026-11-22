@@ -1,0 +1,19 @@
+{
+  "date": "2026-11-22",
+  "java_runtime": "JBR 21.0.10 standard JCA",
+  "rust_implementation": "ring 0.17.14 (PC worker reported; coordinator reviewed log)",
+  "reviewed_candidate_sha256": "22a24a7c07b3f40d4a4d427c43acde001f01702499061543d995909f1b348a65",
+  "frozen_spec_sha256": "b1aa1e6f476233ebdb31551315ef47ce85537eb80f22c22c6d52e556e86e0596",
+  "java_command": "scripts/check-account-transfer.ps1 -JavaHome <JBR21> -ForeignEnvelope checks/fixtures/account-transfer-v1/rust-unicode.muse-account",
+  "java_exit_code": 0,
+  "java_jca_checks": 35,
+  "java_schema_checks": 37,
+  "java_rust_plaintext_equal_exact_bytes": true,
+  "actual_plaintext_sha256": "20eb681e8cf8ed5a9252700550f0ce605e76ccc61a9e4ab26d2e9e83db9604b0",
+  "rust_envelope_sha256": "55a9307d8df12f5d3100308f6e322ce60fe975dae6fba0db4e6e5b810e74be34",
+  "rust_command": "cargo test -p muse-desktop account_transfer -- --test-threads=1",
+  "rust_passed": 9,
+  "rust_exit_code": 0,
+  "android_device_tested": false,
+  "live_account_or_proxy_tested": false
+}
