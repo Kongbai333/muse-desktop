@@ -58,7 +58,11 @@ def check_run(binary, flag):
                 print((root / "crash.log").read_text(errors="replace"))
             raise
         report = json.loads((root / "smoke-result.json").read_text())
-        print(json.dumps(report, indent=2))
+        print(json.dumps(report, indent=2), flush=True)
+        if flag in ("--smoke-test", "--proxy-smoke-test"):
+            # The transfer probe runs before legacy Cookie import. Preserve its
+            # independent evidence even when the later UI assertion fails.
+            check_transfer_report(root)
         for check in ("passed", "actual_profile_bindings_verified", "independent_account_storage", "same_account_tabs_share_storage"):
             if report.get(check) is not True:
                 raise SystemExit(f"Native smoke failed: {check}")
@@ -67,7 +71,6 @@ def check_run(binary, flag):
         if report.get("webview_pixels_visible") is not None:
             raise SystemExit("Unexpected Windows pixel result in the macOS smoke report")
         if flag in ("--smoke-test", "--proxy-smoke-test"):
-            check_transfer_report(root)
             for check in ("cookie_import_isolated_and_private", "cookie_import_cookie_sent_on_navigation", "cookie_import_original_account_restored", "cookie_import_proxy_route_preserved", "cookie_import_expected_route_used"):
                 if report.get(check) is not True:
                     raise SystemExit(f"Native Cookie import failed: {check}")

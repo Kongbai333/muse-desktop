@@ -98,3 +98,18 @@ Windows Rust/ring 0.17.14 实际消费 Java 固定及随机文件，解密明文
 - native host_only 缺失保留 unknown；快照记录返回的 Muse URL 作用域，不保证完整 jar、分区键、localStorage 或 IndexedDB。
 - 仅按用户确定的静态代理假设迁移配置与不透明认证；不做轮换、动态识别或出口 IP 获取/比较/保证。
 - 没有读取真实账号数据库、用户浏览器 profile、真实 Cookie/代理凭据；没有真实 Muse/代理身份验收；没有远端操作。
+
+## 2026-11-23 首轮远端 CI 与诊断补充
+
+以上“没有 Mac 构建/远端操作”为初次本地 ready 的历史边界。获双端放行后，已普通推送 `009e2cec0c023c5543864ba7334df6223dad5c04`；协调者唯一触发 Desktop clients run `45044303264`。该 run 的 Windows job 成功，Mac arm64 job `137275413602` 与 x64 job `137275413427` 都已完成 release 编译与打包，但原生 smoke 失败，不能称 Mac 验收完成。
+
+两份精确 job 日志均只有 `cookie_import_error="Cookie import did not create exactly one new account"`，没有原 Cookie 表单保存的错误上下文。源码追踪到旧入口将 native stage/parse/save 错误存于表单 `message`，而 smoke 随后的账号计数断言丢弃该信息。因此先补仅合成 smoke 的诊断：保留全部失败断言，输出既有表单错误、退出阶段、save_enabled 和数量/切换布尔值，不输出 Cookie、账号 ID、密码或路由认证。Mac runner 也在旧入口断言失败前打印独立 transfer probe 报告，避免临时目录清理后丢失先行检查证据。此提交用于下一轮 Mac 定位，尚未确定或修复 Mac 导入根因；未猜改 Foundation/SameSite，也未修改冻结 v1。
+
+此诊断源码在 Windows 的新鲜验证：
+
+- `py -3 -m unittest discover -s tests -p test_macos_package.py`：新增“后续旧入口失败仍保留先行 transfer 报告”的回归先 RED，修改后 7 项 GREEN，exit 0。
+- `cargo test --workspace --locked`：144 项通过，exit 0；`cargo build -p muse-desktop --locked`、`cargo fmt --all -- --check` 与 `git diff --check` 均 exit 0，保留既有 unused/dead_code 警告。
+- `py -3 .superpowers/run-cookie-native.py`：exit 0，合成证据 `.runtime/cookie-native-e5hyo6hp/`。
+- `py -3 .superpowers/run-cookie-native.py proxy`：exit 0，合成证据 `.runtime/cookie-native-mya8qf4n/`。
+
+原始日志为 `.superpowers/sdd/2026-11-22-encrypted-account-transfer/ci-cookie-diagnostics-{red,green,workspace,build,native-direct,native-proxy}.log`，另保存 `ci-first-macos-x64.log`。Windows 合成通过不代替 Mac 运行；后续仍由协调者唯一 dispatch，不执行 rerun/dispatch 或真实账号请求。

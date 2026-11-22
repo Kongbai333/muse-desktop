@@ -79,7 +79,22 @@ pub(in crate::ui) fn begin(
         .active_browser_identity()
         .ok_or("missing imported account")?;
     if imported.account_id == original.account_id || this.workspace.accounts.len() != count + 1 {
-        return Err("Cookie import did not create exactly one new account".into());
+        // Only the disposable synthetic harness reaches this function. Surface
+        // the form's existing failure instead of losing the native-stage error
+        // behind the account-count assertion; never print Cookie values.
+        let (message, exiting) = this
+            .account_dialog
+            .as_ref()
+            .map_or(("no account form", false), |dialog| {
+                (dialog.message.as_str(), dialog.transition.is_exiting())
+            });
+        return Err(format!(
+            "Cookie import did not create exactly one new account: form_error={message}; form_exiting={exiting}; save_enabled={}; account_count={}->{}; active_account_changed={}",
+            this.save_enabled,
+            count,
+            this.workspace.accounts.len(),
+            imported.account_id != original.account_id,
+        ));
     }
     if this
         .workspace

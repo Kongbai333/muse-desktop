@@ -1,9 +1,13 @@
 import importlib.util
+import contextlib
+import io
+import json
 import pathlib
 import plistlib
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("package_macos", ROOT / "scripts/package-macos.py")
@@ -15,6 +19,27 @@ smoke_spec.loader.exec_module(smoke)
 
 
 class MacPackageTests(unittest.TestCase):
+    def test_failed_legacy_cookie_smoke_still_reports_completed_transfer_checks(self):
+        def native_fixture(command, **_):
+            root = pathlib.Path(command[command.index("--data-dir") + 1])
+            (root / "smoke-result.json").write_text(json.dumps({
+                "passed": False,
+                "cookie_import_error": "synthetic Cookie form rejected the fixture",
+            }))
+            (root / "transfer-native-result.json").write_text(json.dumps({
+                "passed": True, "native_scope_readback": True,
+                "http_only_same_site_expiry": True, "shared_proxy_snapshot": True,
+                "account_isolation": True, "no_navigation_before_commit": True,
+                "no_metadata_before_commit": True,
+            }))
+
+        output = io.StringIO()
+        with patch.object(smoke.subprocess, "run", side_effect=native_fixture):
+            with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+                smoke.check_run(pathlib.Path("synthetic-native-binary"), "--smoke-test")
+        self.assertIn('"native_scope_readback": true', output.getvalue())
+        self.assertIn('synthetic Cookie form rejected the fixture', output.getvalue())
+
     def test_native_cookie_paths_include_the_new_transfer_adapter_check(self):
         self.assertTrue(callable(getattr(smoke, "native_cookie_flags", None)))
         for flag in ("--smoke-test", "--proxy-smoke-test"):
