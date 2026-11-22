@@ -1,0 +1,129 @@
+//! Native caption behavior must not pass through GPUI's focus-prevent-default path.
+
+use gpui::Window;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use windows::Win32::{
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Graphics::Gdi::ScreenToClient,
+    UI::{
+        HiDpi::GetDpiForWindow,
+        Input::KeyboardAndMouse::ReleaseCapture,
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::*,
+    },
+};
+
+const CAPTION_SUBCLASS: usize = 0x4D55_5345;
+
+// Tabs share the title bar. These logical x positions mark the tab strip so the
+// native drag region skips it: [48, TABS_START) and [DRAG_START, width - 138).
+// f32::MAX until the first frame keeps the previous whole-bar behaviour.
+static TABS_START: AtomicU32 = AtomicU32::new(0x7F7F_FFFF);
+static DRAG_START: AtomicU32 = AtomicU32::new(0x7F7F_FFFF);
+
+pub fn set_drag_start(drag_start: f32) {
+    DRAG_START.store(drag_start.to_bits(), Ordering::Relaxed);
+}
+
+/// A full-window overlay (image viewer) owns the title bar: its buttons must
+/// receive clicks instead of starting a window drag.
+static OVERLAY: AtomicBool = AtomicBool::new(false);
+
+pub fn set_overlay(open: bool) {
+    OVERLAY.store(open, Ordering::Relaxed);
+}
+
+pub fn set_tabs_start(tabs_start: f32) {
+    TABS_START.store(tabs_start.to_bits(), Ordering::Relaxed);
+}
+
+pub struct CaptionBridge(HWND);
+impl CaptionBridge {
+    pub fn install(window: &Window) -> Result<Self, String> {
+        let hwnd = crate::windows_host::hwnd(window)?;
+        if unsafe { SetWindowSubclass(hwnd, Some(caption_proc), CAPTION_SUBCLASS, 0) }.as_bool() {
+            Ok(Self(hwnd))
+        } else {
+            Err("无法启用原生标题栏拖动".into())
+        }
+    }
+}
+impl Drop for CaptionBridge {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = RemoveWindowSubclass(self.0, Some(caption_proc), CAPTION_SUBCLASS);
+        }
+    }
+}
+
+unsafe extern "system" fn caption_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _: usize,
+    _: usize,
+) -> LRESULT {
+    // This callback has no GPUI entity borrows and owns no heap state. Windows
+    // can run the modal move/size loop here without suppressing its default.
+    unsafe {
+        if message == WM_NCHITTEST {
+            let native = DefWindowProcW(hwnd, message, wparam, lparam);
+            if matches!(
+                native.0 as u32,
+                HTLEFT
+                    | HTRIGHT
+                    | HTTOP
+                    | HTTOPLEFT
+                    | HTTOPRIGHT
+                    | HTBOTTOM
+                    | HTBOTTOMLEFT
+                    | HTBOTTOMRIGHT
+            ) {
+                return native;
+            }
+            let mut point = POINT {
+                x: lparam.0 as i16 as i32,
+                y: ((lparam.0 >> 16) as i16) as i32,
+            };
+            let mut client = RECT::default();
+            if ScreenToClient(hwnd, &mut point).as_bool()
+                && GetClientRect(hwnd, &mut client).is_ok()
+            {
+                let scale = GetDpiForWindow(hwnd) as f32 / 96.;
+                if scale > 0. {
+                    let (x, y, width) = (
+                        point.x as f32 / scale,
+                        point.y as f32 / scale,
+                        (client.right - client.left) as f32 / scale,
+                    );
+                    if OVERLAY.load(Ordering::Relaxed) && y >= 0. {
+                        return LRESULT(HTCLIENT as isize);
+                    }
+                    if (0.0..crate::theme::TITLEBAR).contains(&y) {
+                        let tabs_start = f32::from_bits(TABS_START.load(Ordering::Relaxed));
+                        let drag_start = f32::from_bits(DRAG_START.load(Ordering::Relaxed));
+                        let outside_tabs = x < tabs_start || x >= drag_start;
+                        return LRESULT(
+                            if x >= 48. && x < width - 138. && y >= 4. && outside_tabs {
+                                HTCAPTION
+                            } else {
+                                HTCLIENT
+                            } as isize,
+                        );
+                    }
+                }
+            }
+        }
+        if matches!(message, WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK)
+            && wparam.0 == HTCAPTION as usize
+        {
+            let _ = ReleaseCapture();
+            return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
+        if message == WM_NCDESTROY {
+            let _ = RemoveWindowSubclass(hwnd, Some(caption_proc), CAPTION_SUBCLASS);
+        }
+        DefSubclassProc(hwnd, message, wparam, lparam)
+    }
+}

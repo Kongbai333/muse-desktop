@@ -1,0 +1,35 @@
+[workspace]
+members = ["crates/muse-core", "crates/muse-proxy", "crates/muse-desktop"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+url = "2.5"
+uuid = { version = "1.18", features = ["v4", "serde"] }
+
+[profile.dev]
+debug = 0
+
+# Page snapshots behind dialogs are PNG-decoded at window size; unoptimised
+# decoding takes long enough to be visible, so the codec stack is optimised.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+# Reference photos are JPEG/WebP; decode them at optimised speed too.
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.image-webp]
+opt-level = 3
+
+

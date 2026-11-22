@@ -1,0 +1,8 @@
+The native single-line text input adapts the GPUI 0.2.2 examples/input.rs
+implementation by Zed Industries, distributed under Apache-2.0.
+Upstream: https://github.com/zed-industries/zed
+Other dependencies retain their respective licenses.
+
+Outline icons are from Tabler Icons, distributed under the MIT license.
+Upstream: https://github.com/tabler/tabler-icons
+The upstream license is included in LICENSES/Tabler-MIT.txt.
