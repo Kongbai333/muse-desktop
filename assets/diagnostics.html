@@ -16,7 +16,7 @@
 </main>
 <script>
 let marker=localStorage.getItem('muse-desktop-diagnostic-marker');
-if(!marker){marker=crypto.randomUUID();localStorage.setItem('muse-desktop-diagnostic-marker',marker)}
+if(!marker){marker=Array.from(crypto.getRandomValues(new Uint8Array(16)),value=>value.toString(16).padStart(2,'0')).join('');localStorage.setItem('muse-desktop-diagnostic-marker',marker)}
 document.getElementById('marker').textContent=marker;
 document.getElementById('where').textContent=location.pathname;
 function reportReady(){if(window.ipc&&document.readyState==='complete')window.ipc.postMessage(JSON.stringify({kind:'diagnostic',marker}));}
