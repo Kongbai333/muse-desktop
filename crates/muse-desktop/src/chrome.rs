@@ -40,25 +40,29 @@ pub(super) fn icon_button(
         .flex()
         .items_center()
         .justify_center()
-        .bg(rgba(if selected { 0xEBEBEEFF } else { 0x00000000 }))
+        .bg(rgba(if selected {
+            (colors().fill_hover << 8) | 0xFF
+        } else {
+            0x00000000
+        }))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .tooltip(move |_, cx| cx.new(|_| Hint(label)).into())
         .when(enabled, |element| {
             element
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(FILL_HOVER)))
-                .active(|s| s.bg(rgb(TRACK)))
+                .hover(|s| s.bg(rgb(colors().fill_hover)))
+                .active(|s| s.bg(rgb(colors().track)))
                 .on_click(on_click)
         })
         .child(glyph(
             icon,
             16.,
             if !enabled {
-                0xC0C1C8
+                tone(0xC0C1C8, 0x676773)
             } else if selected {
-                TEXT
+                colors().text
             } else {
-                0x6E6F76
+                tone(0x6E6F76, 0xAAAAB5)
             },
         ))
 }
@@ -78,12 +82,30 @@ pub(super) fn text_button(
         .items_center()
         .justify_center()
         .border_1()
-        .border_color(rgb(if primary { INK } else { LINE }))
-        .bg(rgb(if primary { INK } else { 0xFFFFFF }))
-        .text_color(rgb(if primary { 0xFFFFFF } else { TEXT }))
+        .border_color(rgb(if primary {
+            colors().primary
+        } else {
+            colors().line
+        }))
+        .bg(rgb(if primary {
+            colors().primary
+        } else {
+            colors().panel
+        }))
+        .text_color(rgb(if primary {
+            colors().on_primary
+        } else {
+            colors().text
+        }))
         .text_size(px(12.))
         .cursor_pointer()
-        .hover(move |s| s.bg(rgb(if primary { INK_HOVER } else { FILL })))
+        .hover(move |s| {
+            s.bg(rgb(if primary {
+                colors().primary_hover
+            } else {
+                colors().fill
+            }))
+        })
         .on_click(on_click)
         .child(label)
 }
@@ -93,8 +115,8 @@ pub(super) fn input_surface(input: Entity<TextInput>) -> Div {
         .rounded_md()
         .overflow_hidden()
         .border_1()
-        .border_color(rgb(0xE0E1E3))
-        .bg(rgb(0xFFFFFF))
+        .border_color(rgb(tone(0xE0E1E3, 0x44444D)))
+        .bg(rgb(colors().panel))
         .child(input)
 }
 
@@ -112,10 +134,18 @@ fn inspector_segment(
         .flex()
         .items_center()
         .justify_center()
-        .bg(rgba(if selected { 0xFFFFFFFF } else { 0x00000000 }))
+        .bg(rgba(if selected {
+            (colors().panel << 8) | 0xFF
+        } else {
+            0x00000000
+        }))
         .text_size(px(11.))
         .cursor_pointer()
-        .text_color(rgb(if selected { TEXT } else { SECONDARY }))
+        .text_color(rgb(if selected {
+            colors().text
+        } else {
+            colors().secondary
+        }))
         .child(label)
         .on_click(on_click)
 }
@@ -157,6 +187,7 @@ impl Render for AccountHint {
 
 impl MuseWindow {
     pub(super) fn show_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_page_zoom();
         if !self.show_start_page {
             self.navigation_transition = crate::motion::TransitionState::entering();
         }
@@ -235,10 +266,16 @@ impl MuseWindow {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .hover(move |s| s.bg(rgb(if close { 0xE81123 } else { 0xE7E8EA })))
+                .hover(move |s| {
+                    s.bg(rgb(if close {
+                        0xE81123
+                    } else {
+                        tone(0xE7E8EA, 0x35353D)
+                    }))
+                })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(move |_, window, cx| action(window, cx))
-                .child(glyph(icon, 14., 0x47484F))
+                .child(glyph(icon, 14., tone(0x47484F, 0xD4D4DC)))
         };
         let left = self
             .chrome_layout(window, Instant::now())
@@ -251,7 +288,7 @@ impl MuseWindow {
             .flex_none()
             .flex()
             .items_center()
-            .bg(rgb(SURFACE))
+            .bg(rgb(colors().surface))
             .child(
                 div()
                     .w(px(left))
@@ -279,7 +316,7 @@ impl MuseWindow {
                             div()
                                 .text_size(px(14.))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(TEXT))
+                                .text_color(rgb(colors().text))
                                 .child("Muse"),
                         )
                     }),
@@ -305,6 +342,7 @@ impl MuseWindow {
                         .inset_0(),
                     ),
             )
+            .child(self.render_theme_switch(cx))
             .child(control(
                 "window-minimize",
                 "window-minimize",
@@ -324,17 +362,66 @@ impl MuseWindow {
             .child(control("window-close", "x", true, |_, cx| cx.quit()))
     }
 
+    fn render_theme_switch(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let option = |id: &'static str, label: &'static str, mode: muse_core::ThemeMode| {
+            let selected = self.display.theme == mode;
+            div()
+                .id(id)
+                .h(px(26.))
+                .px(px(9.))
+                .rounded_md()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(11.))
+                .text_color(rgb(if selected {
+                    colors().text
+                } else {
+                    colors().secondary
+                }))
+                .when(selected, |element| element.bg(rgb(colors().panel)))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |this, _, window, cx| this.set_theme(mode, window, cx)))
+                .child(label)
+        };
+        div()
+            .id("theme-switch")
+            .relative()
+            .flex_none()
+            .flex()
+            .items_center()
+            .mr_2()
+            .p(px(2.))
+            .rounded_lg()
+            .bg(rgb(colors().fill))
+            .child(
+                canvas(
+                    |bounds, _, _| crate::windows_caption::set_drag_end(f32::from(bounds.origin.x)),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(option("theme-light", "白天", muse_core::ThemeMode::Light))
+            .child(option("theme-dark", "晚上", muse_core::ThemeMode::Dark))
+    }
+
     fn render_sidebar_divider(&self, width: f32, cx: &Context<Self>) -> Stateful<Div> {
         div()
             .id("sidebar-divider")
             .w(px(width))
             .h_full()
             .flex_none()
-            .bg(rgb(if self.sidebar_dragging { BLUE } else { SIDE }))
+            .bg(rgb(if self.sidebar_dragging {
+                colors().blue
+            } else {
+                colors().surface
+            }))
             .when(!self.sidebar.collapsed, |element| {
                 element
                     .cursor_col_resize()
-                    .hover(|s| s.bg(rgb(TRACK)))
+                    .hover(|s| s.bg(rgb(colors().track)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
@@ -400,15 +487,29 @@ impl MuseWindow {
                     .pl(px(10.))
                     .pr_1()
                     .rounded_t_lg()
-                    .bg(rgb(if active { 0xFFFFFF } else { SURFACE }))
-                    .hover(move |s| s.bg(rgb(if active { 0xFFFFFF } else { FILL_HOVER })))
+                    .bg(rgb(if active {
+                        colors().panel
+                    } else {
+                        colors().surface
+                    }))
+                    .hover(move |s| {
+                        s.bg(rgb(if active {
+                            colors().panel
+                        } else {
+                            colors().fill_hover
+                        }))
+                    })
                     .cursor_pointer()
                     .child(match account {
                         Some(owner) => self.account_avatar(owner, 16., false),
                         None => div().child(glyph(
                             "world",
                             12.,
-                            if active { 0x71717A } else { 0x9E9FA6 },
+                            if active {
+                                tone(0x71717A, 0xAAAAB5)
+                            } else {
+                                tone(0x9E9FA6, 0x92929F)
+                            },
                         )),
                     })
                     .child(
@@ -418,7 +519,11 @@ impl MuseWindow {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_size(px(12.))
-                            .text_color(rgb(if active { TEXT } else { SECONDARY }))
+                            .text_color(rgb(if active {
+                                colors().text
+                            } else {
+                                colors().secondary
+                            }))
                             .child(tab.title),
                     )
                     .child(
@@ -430,8 +535,8 @@ impl MuseWindow {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .hover(|s| s.bg(rgb(FILL_HOVER)))
-                            .child(glyph("x", 12., 0x8F9097))
+                            .hover(|s| s.bg(rgb(colors().fill_hover)))
+                            .child(glyph("x", 12., tone(0x8F9097, 0xAAAAB5)))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.close_tab_id(id, window, cx);
@@ -445,7 +550,7 @@ impl MuseWindow {
                             .right_0()
                             .bottom_0()
                             .h(px(1.))
-                            .bg(rgb(0xFFFFFF)),
+                            .bg(rgb(colors().panel)),
                         self.navigation_transition,
                         self.motion_policy,
                         crate::motion::MotionKind::Popover,
@@ -453,6 +558,7 @@ impl MuseWindow {
                     ));
                 }
                 tab_element.on_click(cx.listener(move |this, _, window, cx| {
+                    this.capture_page_zoom();
                     if this
                         .workspace
                         .active_browser_identity()
@@ -476,7 +582,7 @@ impl MuseWindow {
             .flex()
             .items_end()
             .gap(px(2.))
-            .bg(rgb(SURFACE))
+            .bg(rgb(colors().surface))
             .overflow_hidden()
             .children(rows)
             .child(div().flex_none().pb(px(3.)).pl_1().child(icon_button(
@@ -521,9 +627,9 @@ impl MuseWindow {
             .flex()
             .items_center()
             .gap_1()
-            .bg(rgb(0xFFFFFF))
+            .bg(rgb(colors().panel))
             .border_b_1()
-            .border_color(rgb(0xF0F1F3))
+            .border_color(rgb(tone(0xF0F1F3, 0x36363E)))
             .child(icon_button(
                 "back",
                 "chevron-left",
@@ -569,9 +675,9 @@ impl MuseWindow {
                     .items_center()
                     .gap_2()
                     .rounded_lg()
-                    .bg(rgb(FILL))
+                    .bg(rgb(colors().fill))
                     .border_1()
-                    .border_color(rgb(FILL))
+                    .border_color(rgb(colors().fill))
                     .child(glyph(
                         if self.show_start_page {
                             "layout-grid"
@@ -579,14 +685,14 @@ impl MuseWindow {
                             "world"
                         },
                         13.,
-                        0x999AA1,
+                        tone(0x999AA1, 0x92929F),
                     ))
                     .when(self.show_start_page, |element| {
                         element.child(
                             div()
                                 .flex_1()
                                 .text_size(px(11.))
-                                .text_color(rgb(0x909198))
+                                .text_color(rgb(tone(0x909198, 0xAAAAB5)))
                                 .child("Muse 工作台"),
                         )
                     })
@@ -594,7 +700,13 @@ impl MuseWindow {
                         element.child(div().flex_1().min_w_0().child(self.address.clone()))
                     })
                     .when(loading, |element| {
-                        element.child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(BLUE)))
+                        element.child(
+                            div()
+                                .size(px(6.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(rgb(colors().blue)),
+                        )
                     })
                     .child(
                         div()
@@ -605,15 +717,15 @@ impl MuseWindow {
                             .items_center()
                             .gap(px(6.))
                             .rounded_md()
-                            .bg(rgb(0xFFFFFF))
+                            .bg(rgb(colors().panel))
                             .border_1()
-                            .border_color(rgb(LINE))
+                            .border_color(rgb(colors().line))
                             .text_size(px(11.))
-                            .text_color(rgb(SECONDARY))
+                            .text_color(rgb(colors().secondary))
                             .child(div().size(px(6.)).rounded_full().bg(rgb(if proxied {
                                 0x16A34A
                             } else {
-                                0xA1A1AA
+                                tone(0xA1A1AA, 0x92929F)
                             })))
                             .child(proxy_label),
                     ),
@@ -657,7 +769,11 @@ impl MuseWindow {
             .flex()
             .items_center()
             .rounded_lg()
-            .bg(rgb(if custom { 0xEEF3FE } else { FILL }))
+            .bg(rgb(if custom {
+                tone(0xEEF3FE, 0x24334F)
+            } else {
+                colors().fill
+            }))
             .child(icon_button(
                 "zoom-out",
                 "window-minimize",
@@ -682,16 +798,16 @@ impl MuseWindow {
                         FontWeight::NORMAL
                     })
                     .text_color(rgb(if !available {
-                        MUTED_TEXT
+                        colors().muted
                     } else if custom {
-                        BLUE
+                        colors().blue
                     } else {
-                        SECONDARY
+                        colors().secondary
                     }))
                     .when(available && custom, |element| {
                         element
                             .cursor_pointer()
-                            .hover(|s| s.bg(rgb(0xFFFFFF)))
+                            .hover(|s| s.bg(rgb(colors().panel)))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.command("zoom_reset", window, cx)
                             }))
@@ -745,9 +861,9 @@ impl MuseWindow {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(0xFFFFFF))
+            .bg(rgb(colors().panel))
             .border_l_1()
-            .border_color(rgb(LINE))
+            .border_color(rgb(colors().line))
             .child(
                 div()
                     .h(px(48.))
@@ -777,7 +893,7 @@ impl MuseWindow {
                     .mb_3()
                     .p(px(3.))
                     .rounded_lg()
-                    .bg(rgb(0xEDEEF0))
+                    .bg(rgb(tone(0xEDEEF0, 0x2B2B31)))
                     .flex()
                     .gap_1()
                     .child(account_tab)
@@ -843,14 +959,14 @@ impl MuseWindow {
                             .child(name),
                     ),
             )
-            .child(div().h(px(1.)).bg(rgb(LINE)))
+            .child(div().h(px(1.)).bg(rgb(colors().line)))
             .child(
                 div()
                     .child(
                         div()
                             .mb_2()
                             .text_size(px(11.))
-                            .text_color(rgb(SECONDARY))
+                            .text_color(rgb(colors().secondary))
                             .child("账号名称"),
                     )
                     .child(input_surface(self.account_name.clone()))
@@ -861,13 +977,13 @@ impl MuseWindow {
                         cx.listener(|this, _, _, cx| this.rename_current(cx)),
                     ))),
             )
-            .child(div().h(px(1.)).bg(rgb(LINE)))
+            .child(div().h(px(1.)).bg(rgb(colors().line)))
             .child(
                 div()
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(rgb(SECONDARY))
+                            .text_color(rgb(colors().secondary))
                             .child("套餐额度"),
                     )
                     .child(div().mt_2().text_size(px(13.)).child(quota))
@@ -876,40 +992,40 @@ impl MuseWindow {
                             .mt_2()
                             .text_size(px(11.))
                             .line_height(px(19.))
-                            .text_color(rgb(SECONDARY))
+                            .text_color(rgb(colors().secondary))
                             .child("头像外圈显示剩余额度。页面就绪后自动同步，数据超过五分钟会标记过期。"),
                     )
                     .child(text_button("refresh-quota","刷新额度",false,
                         cx.listener(|this,_,window,cx|this.refresh_current_quota(window,cx))))
                     .when_some(account.and_then(|a|a.quota.observed_at()),|element,time| {
                         let age=crate::page_observer::now_ms().saturating_sub(time)/1000;
-                        element.child(div().mt_2().text_size(px(10.)).text_color(rgb(SECONDARY)).child(format!("{} 秒前同步",age)))
+                        element.child(div().mt_2().text_size(px(10.)).text_color(rgb(colors().secondary)).child(format!("{} 秒前同步",age)))
                     })
                     .when_some(account.and_then(|a| match &a.quota {
                         muse_core::QuotaState::Known(v) | muse_core::QuotaState::Stale(v) => v.resets_at(),
                         _ => None,
                     }),|element,time| {
                         let hours=time.saturating_sub(crate::page_observer::now_ms()).div_ceil(3_600_000);
-                        element.child(div().mt_1().text_size(px(10.)).text_color(rgb(SECONDARY)).child(format!("约 {hours} 小时后重置")))
+                        element.child(div().mt_1().text_size(px(10.)).text_color(rgb(colors().secondary)).child(format!("约 {hours} 小时后重置")))
                     }),
             )
             .child(
                 div()
-                    .child(div().text_size(px(11.)).text_color(rgb(SECONDARY)).child("邀请 / 额外额度"))
+                    .child(div().text_size(px(11.)).text_color(rgb(colors().secondary)).child("邀请 / 额外额度"))
                     .child(div().mt_2().text_size(px(13.)).child(account.map(|a|a.extra_quota.label()).unwrap_or_else(||"尚未读取额外额度".into())))
-                    .child(div().mt_2().text_size(px(11.)).line_height(px(18.)).text_color(rgb(SECONDARY)).child("单独显示 Muse 返回的额外额度，不计入套餐外圈。"))
+                    .child(div().mt_2().text_size(px(11.)).line_height(px(18.)).text_color(rgb(colors().secondary)).child("单独显示 Muse 返回的额外额度，不计入套餐外圈。"))
             )
-            .child(div().h(px(1.)).bg(rgb(LINE)))
-            .child(div().text_size(px(11.)).text_color(rgb(SECONDARY)).child(
+            .child(div().h(px(1.)).bg(rgb(colors().line)))
+            .child(div().text_size(px(11.)).text_color(rgb(colors().secondary)).child(
                 if account.is_some_and(|a|self.browsers.profile_verified(a.id)) {"浏览器目录已核验 · 独立账号环境"} else {"浏览器目录待核验"}
             ))
-            .child(div().text_size(px(11.)).text_color(rgb(SECONDARY)).child(
+            .child(div().text_size(px(11.)).text_color(rgb(colors().secondary)).child(
                 if self.workspace.active_browser_identity().is_some_and(|id|self.browsers.page_ready(id)) {"页面已就绪"} else {"页面准备中"}
             ))
             .child(
                 div()
                     .text_size(px(11.))
-                    .text_color(rgb(SECONDARY))
+                    .text_color(rgb(colors().secondary))
                     .child(account.map(|a| a.network.label()).unwrap_or("系统网络")),
             )
             .child(text_button(
@@ -926,8 +1042,8 @@ impl MuseWindow {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .text_color(rgb(DANGER))
-                    .child(glyph("trash", 14., DANGER))
+                    .text_color(rgb(colors().danger))
+                    .child(glyph("trash", 14., colors().danger))
                     .child(
                         div()
                             .text_size(px(11.))
@@ -943,7 +1059,7 @@ impl MuseWindow {
                 div()
                     .text_size(px(10.))
                     .line_height(px(18.))
-                    .text_color(rgb(SECONDARY))
+                    .text_color(rgb(colors().secondary))
                     .child("移除仅影响列表，浏览器数据会保留。"),
             )
     }
@@ -959,7 +1075,7 @@ impl MuseWindow {
                     div()
                         .mb_1()
                         .text_size(px(11.))
-                        .text_color(rgb(SECONDARY))
+                        .text_color(rgb(colors().secondary))
                         .child(label),
                 )
                 .child(input_surface(input))
@@ -973,8 +1089,8 @@ impl MuseWindow {
                     .p_3()
                     .rounded_lg()
                     .border_1()
-                    .border_color(rgb(LINE))
-                    .bg(rgb(0xF4F5F5))
+                    .border_color(rgb(colors().line))
+                    .bg(rgb(tone(0xF4F5F5, 0x2B2B31)))
                     .child(
                         div()
                             .text_size(px(11.))
@@ -985,7 +1101,7 @@ impl MuseWindow {
                         div()
                             .mt_1()
                             .text_size(px(10.))
-                            .text_color(rgb(SECONDARY))
+                            .text_color(rgb(colors().secondary))
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .child(editor.applied_summary.clone()),
@@ -994,7 +1110,7 @@ impl MuseWindow {
                         div()
                             .mt_1()
                             .text_size(px(10.))
-                            .text_color(rgb(SECONDARY))
+                            .text_color(rgb(colors().secondary))
                             .child(
                                 count
                                     .map(|count| format!("已处理 {count} 次代理请求"))
@@ -1040,14 +1156,14 @@ impl MuseWindow {
                                     .child(
                                         div()
                                             .text_size(px(11.))
-                                            .text_color(rgb(SECONDARY))
+                                            .text_color(rgb(colors().secondary))
                                             .child("密码"),
                                     )
                                     .child(
                                         div()
                                             .id("proxy-reveal-secret")
                                             .text_size(px(10.))
-                                            .text_color(rgb(BLUE))
+                                            .text_color(rgb(colors().blue))
                                             .cursor_pointer()
                                             .child(if editor.reveal { "隐藏" } else { "显示" })
                                             .on_click(cx.listener(|this, _, _, cx| {
@@ -1075,8 +1191,16 @@ impl MuseWindow {
                                     .size(px(14.))
                                     .rounded_sm()
                                     .border_1()
-                                    .border_color(rgb(if editor.force { BLUE } else { 0xC8C9CC }))
-                                    .bg(rgb(if editor.force { BLUE } else { 0xFFFFFF }))
+                                    .border_color(rgb(if editor.force {
+                                        colors().blue
+                                    } else {
+                                        tone(0xC8C9CC, 0x60606D)
+                                    }))
+                                    .bg(rgb(if editor.force {
+                                        colors().blue
+                                    } else {
+                                        colors().panel
+                                    }))
                                     .child(
                                         div()
                                             .flex()
@@ -1084,7 +1208,7 @@ impl MuseWindow {
                                             .justify_center()
                                             .size_full()
                                             .text_size(px(10.))
-                                            .text_color(rgb(0xFFFFFF))
+                                            .text_color(rgb(colors().on_primary))
                                             .child(if editor.force { "✓" } else { "" }),
                                     ),
                             )
@@ -1101,7 +1225,7 @@ impl MuseWindow {
                         cx.listener(|this, _, _, cx| this.paste_proxy(cx)),
                     ))
             })
-            .child(div().h(px(1.)).bg(rgb(LINE)))
+            .child(div().h(px(1.)).bg(rgb(colors().line)))
             .child(
                 div()
                     .flex()
@@ -1131,7 +1255,7 @@ impl MuseWindow {
                 div()
                     .id("proxy-revert")
                     .text_size(px(10.))
-                    .text_color(rgb(BLUE))
+                    .text_color(rgb(colors().blue))
                     .cursor_pointer()
                     .child("还原已保存配置")
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1144,7 +1268,11 @@ impl MuseWindow {
                     div()
                         .text_size(px(11.))
                         .line_height(px(18.))
-                        .text_color(rgb(if editor.good { 0x27755B } else { 0xB42318 }))
+                        .text_color(rgb(if editor.good {
+                            tone(0x27755B, 0x77D4A4)
+                        } else {
+                            tone(0xB42318, 0xFF9B94)
+                        }))
                         .child(editor.message.clone()),
                 )
             })
@@ -1152,7 +1280,7 @@ impl MuseWindow {
                 div()
                     .text_size(px(10.))
                     .line_height(px(18.))
-                    .text_color(rgb(SECONDARY))
+                    .text_color(rgb(colors().secondary))
                     .child("测试不保存配置。应用会重新加载当前账号的页面，其他账号不受影响。"),
             )
     }
@@ -1164,7 +1292,7 @@ impl MuseWindow {
                 .min_h_0()
                 .relative()
                 .overflow_hidden()
-                .bg(rgb(0xFFFFFF))
+                .bg(rgb(colors().panel))
                 .child(
                     img(frame)
                         .absolute()
@@ -1186,10 +1314,14 @@ impl MuseWindow {
             .gap_3()
             .px_5()
             .text_size(px(12.))
-            .text_color(rgb(SECONDARY))
+            .text_color(rgb(colors().secondary))
             .when_some(error, |element, error| {
                 element
-                    .child(div().text_color(rgb(TEXT)).child("无法打开此账号的网页"))
+                    .child(
+                        div()
+                            .text_color(rgb(colors().text))
+                            .child("无法打开此账号的网页"),
+                    )
                     .child(div().max_w(px(420.)).child(error.to_owned()))
                     .child(
                         div()
@@ -1274,8 +1406,8 @@ impl Render for MuseWindow {
             .flex_col()
             .font_family("Segoe UI Variable")
             .text_size(px(13.))
-            .text_color(rgb(TEXT))
-            .bg(rgb(0xFFFFFF))
+            .text_color(rgb(colors().text))
+            .bg(rgb(colors().panel))
             .on_action(cx.listener(Self::back))
             .on_action(cx.listener(Self::forward))
             .on_action(cx.listener(Self::reload))
@@ -1370,19 +1502,19 @@ impl Render for MuseWindow {
                     .items_center()
                     .gap_2()
                     .border_t_1()
-                    .border_color(rgb(LINE))
-                    .bg(rgb(SIDE))
-                    .child(glyph("shield-check", 12., MUTED_TEXT))
+                    .border_color(rgb(colors().line))
+                    .bg(rgb(colors().surface))
+                    .child(glyph("shield-check", 12., colors().muted))
                     .child(
                         div()
                             .flex_none()
                             .text_size(px(11.))
-                            .text_color(rgb(MUTED_TEXT))
+                            .text_color(rgb(colors().muted))
                             .child("账号数据仅保存在本机"),
                     )
                     .child(div().flex_1())
                     .when(loading, |element| {
-                        element.child(div().size(px(6.)).rounded_full().bg(rgb(BLUE)))
+                        element.child(div().size(px(6.)).rounded_full().bg(rgb(colors().blue)))
                     })
                     .child(
                         div()
@@ -1390,7 +1522,7 @@ impl Render for MuseWindow {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_size(px(11.))
-                            .text_color(rgb(SECONDARY))
+                            .text_color(rgb(colors().secondary))
                             .child(if self.show_start_page {
                                 format!("工作室 · {} 个账号", self.workspace.accounts.len())
                             } else if loading {

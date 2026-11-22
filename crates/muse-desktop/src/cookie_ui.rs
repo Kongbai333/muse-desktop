@@ -1,9 +1,6 @@
 use super::chrome::{glyph, text_button};
 use super::*;
-use crate::{
-    cookie_export::{self, CookieBundle, CookieTarget},
-    theme::*,
-};
+use crate::cookie_export::{self, CookieBundle, CookieTarget};
 
 impl MuseWindow {
     pub(super) fn open_cookie_dialog(
@@ -416,8 +413,16 @@ impl MuseWindow {
                     .p_3()
                     .rounded_xl()
                     .border_1()
-                    .border_color(rgb(if checked { 0xC9D8F8 } else { 0xE8E9EB }))
-                    .bg(rgb(if checked { 0xF8F9F9 } else { 0xFFFFFF }))
+                    .border_color(rgb(if checked {
+                        tone(0xC9D8F8, 0x516EAA)
+                    } else {
+                        tone(0xE8E9EB, 0x36363E)
+                    }))
+                    .bg(rgb(if checked {
+                        tone(0xF8F9F9, 0x28282F)
+                    } else {
+                        colors().panel
+                    }))
                     .flex()
                     .items_center()
                     .gap_3()
@@ -427,9 +432,17 @@ impl MuseWindow {
                             .flex_none()
                             .rounded_md()
                             .border_1()
-                            .border_color(rgb(if checked { BLUE } else { 0xCFD0D3 }))
-                            .bg(rgb(if checked { BLUE } else { 0xFFFFFF }))
-                            .text_color(rgb(0xFFFFFF))
+                            .border_color(rgb(if checked {
+                                colors().blue
+                            } else {
+                                tone(0xCFD0D3, 0x60606D)
+                            }))
+                            .bg(rgb(if checked {
+                                colors().blue
+                            } else {
+                                colors().panel
+                            }))
+                            .text_color(rgb(colors().on_primary))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -456,7 +469,7 @@ impl MuseWindow {
                             .child(
                                 div()
                                     .text_size(px(11.))
-                                    .text_color(rgb(SECONDARY))
+                                    .text_color(rgb(colors().secondary))
                                     .child(target.status.clone()),
                             ),
                     )
@@ -484,8 +497,8 @@ impl MuseWindow {
             .rounded(px(18.))
             .overflow_hidden()
             .border_1()
-            .border_color(rgb(0xE4E5E7))
-            .bg(rgb(0xF9F9FA))
+            .border_color(rgb(tone(0xE4E5E7, 0x3F3F46)))
+            .bg(rgb(tone(0xF9F9FA, 0x1D1D21)))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -494,13 +507,13 @@ impl MuseWindow {
                     .px_5()
                     .py_4()
                     .flex_none()
-                    .bg(rgb(0xFFFFFF))
+                    .bg(rgb(colors().panel))
                     .rounded_tl(px(18.))
                     .rounded_tr(px(18.))
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(glyph("cookie", 21., BLUE))
+                    .child(glyph("cookie", 21., colors().blue))
                     .child(
                         div()
                             .flex_1()
@@ -516,7 +529,7 @@ impl MuseWindow {
                             .child(
                                 div()
                                     .text_size(px(11.))
-                                    .text_color(rgb(SECONDARY))
+                                    .text_color(rgb(colors().secondary))
                                     .child("选择账号，复制为 muse2api 可直接导入的格式"),
                             ),
                     )
@@ -529,8 +542,8 @@ impl MuseWindow {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .hover(|style| style.bg(rgb(0xF2F3F5)))
-                            .child(glyph("x", 15., SECONDARY))
+                            .hover(|style| style.bg(rgb(tone(0xF2F3F5, 0x35353D))))
+                            .child(glyph("x", 15., colors().secondary))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.close_cookie_dialog(window, cx)
                             })),
@@ -548,7 +561,7 @@ impl MuseWindow {
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(rgb(SECONDARY))
+                            .text_color(rgb(colors().secondary))
                             .child(format!(
                                 "已选择 {selected} / {} 个账号",
                                 dialog.targets.len()
@@ -558,7 +571,7 @@ impl MuseWindow {
                         div()
                             .id("cookie-select-all")
                             .text_size(px(11.))
-                            .text_color(rgb(BLUE))
+                            .text_color(rgb(colors().blue))
                             .child(if all { "取消全选" } else { "全选" })
                             .when(!dialog.extracting && !exiting, |element| {
                                 element.cursor_pointer().on_click(cx.listener(
@@ -599,7 +612,7 @@ impl MuseWindow {
                     .flex_none()
                     .text_size(px(11.))
                     .line_height(px(18.))
-                    .text_color(rgb(SECONDARY))
+                    .text_color(rgb(colors().secondary))
                     .child(dialog.message.clone()),
             )
             .child(
@@ -610,8 +623,8 @@ impl MuseWindow {
                     .rounded_bl(px(18.))
                     .rounded_br(px(18.))
                     .border_t_1()
-                    .border_color(rgb(0xEAEBED))
-                    .bg(rgb(0xFFFFFF))
+                    .border_color(rgb(tone(0xEAEBED, 0x36363E)))
+                    .bg(rgb(colors().panel))
                     .flex()
                     .items_center()
                     .justify_end()
@@ -632,8 +645,16 @@ impl MuseWindow {
                             .items_center()
                             .justify_center()
                             .text_size(px(12.))
-                            .bg(rgb(if enabled { INK } else { FILL }))
-                            .text_color(rgb(if enabled { 0xFFFFFF } else { 0x9E9FA6 }))
+                            .bg(rgb(if enabled {
+                                colors().primary
+                            } else {
+                                colors().fill
+                            }))
+                            .text_color(rgb(if enabled {
+                                colors().on_primary
+                            } else {
+                                tone(0x9E9FA6, 0x92929F)
+                            }))
                             .child(if dialog.extracting {
                                 "正在提取…".into()
                             } else {
@@ -642,7 +663,7 @@ impl MuseWindow {
                             .when(enabled && !exiting, |element| {
                                 element
                                     .cursor_pointer()
-                                    .hover(|style| style.bg(rgb(INK_HOVER)))
+                                    .hover(|style| style.bg(rgb(colors().primary_hover)))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.start_cookie_copy(window, cx)
                                     }))

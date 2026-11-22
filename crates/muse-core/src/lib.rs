@@ -10,6 +10,8 @@ use url::Url;
 use uuid::Uuid;
 mod extra_quota;
 pub use extra_quota::{ExtraQuotaObservation, ExtraQuotaState};
+mod display_preferences;
+pub use display_preferences::{DisplayPreferences, ThemeMode};
 
 pub const HOME_URL: &str = "https://muse.ai/";
 pub type AccountId = Uuid;

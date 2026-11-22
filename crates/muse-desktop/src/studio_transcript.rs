@@ -1,5 +1,5 @@
 use super::chrome::glyph;
-use super::studio_ui::{INK, MUTED, SOFT, StudioHint, StudioPanel, entry_ratio};
+use super::studio_ui::{StudioHint, StudioPanel, entry_ratio};
 use super::*;
 use crate::studio::{self, Mode};
 
@@ -33,7 +33,7 @@ impl MuseWindow {
             .bg(rgb(if entry.mode == Mode::Video && media_path.is_some() {
                 0x18181B
             } else {
-                0xF2F2F4
+                tone(0xF2F2F4, 0x2B2B31)
             }));
         if let Some(path) = media_path.clone() {
             frame = frame.cursor_pointer().on_click(
@@ -122,7 +122,7 @@ impl MuseWindow {
                     .text_center()
                     .text_size(px(13.))
                     .line_height(px(20.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors().secondary))
                     .child(if entry.status.trim().is_empty() {
                         "未取得结果".to_owned()
                     } else {
@@ -138,7 +138,7 @@ impl MuseWindow {
             .w_full()
             .text_size(px(14.))
             .line_height(px(22.))
-            .text_color(rgb(INK))
+            .text_color(rgb(colors().text))
             .cursor_pointer()
             .when(!expanded, |element| element.line_clamp(3))
             .tooltip(move |_, cx| {
@@ -190,14 +190,14 @@ impl MuseWindow {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_size(px(12.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors().secondary))
                     .child(kind),
             )
             .child(
                 div()
                     .flex_none()
                     .text_size(px(12.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors().secondary))
                     .child(record_time(entry.created_at)),
             );
 
@@ -303,16 +303,19 @@ impl MuseWindow {
                                     .rounded(px(8.))
                                     .overflow_hidden()
                                     .border_1()
-                                    .border_color(rgb(0xE4E4E7))
+                                    .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
                                     .child(img(path).size_full().object_fit(ObjectFit::Cover)),
                             )
-                            .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(
-                                if entry.mode == Mode::Video {
-                                    "图生视频 · 参考图作为画面起点"
-                                } else {
-                                    "图生图 · 以参考图为基础"
-                                },
-                            )),
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(rgb(colors().secondary))
+                                    .child(if entry.mode == Mode::Video {
+                                        "图生视频 · 参考图作为画面起点"
+                                    } else {
+                                        "图生图 · 以参考图为基础"
+                                    }),
+                            ),
                     )
                 },
             )
@@ -329,7 +332,7 @@ impl MuseWindow {
                         .mt(px(6.))
                         .text_size(px(13.))
                         .line_height(px(21.))
-                        .text_color(rgb(0x52535A))
+                        .text_color(rgb(tone(0x52535A, 0xB6B6C2)))
                         .child(entry.text.clone()),
                 )
             })
@@ -352,8 +355,8 @@ impl MuseWindow {
             .flex_col()
             .rounded_lg()
             .border_1()
-            .border_color(rgb(0xE4E4E7))
-            .bg(rgb(0xFFFFFF))
+            .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+            .bg(rgb(colors().panel))
             .shadow_md()
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -596,7 +599,11 @@ fn card_button(
     ghost: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
-    let color = if ghost { MUTED } else { INK };
+    let color = if ghost {
+        colors().secondary
+    } else {
+        colors().text
+    };
     div()
         .id(id)
         .h(px(34.))
@@ -610,14 +617,18 @@ fn card_button(
         .flex_none()
         .rounded(px(10.))
         .border_1()
-        .border_color(rgba(if ghost { 0x00000000 } else { 0xD4D4D8FF }))
+        .border_color(rgba(if ghost {
+            0x00000000
+        } else {
+            (tone(0xD4D4D8, 0x60606D) << 8) | 0xFF
+        }))
         .flex()
         .items_center()
         .gap(px(6.))
         .text_size(px(13.))
         .text_color(rgb(color))
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(SOFT)))
+        .hover(|style| style.bg(rgb(colors().fill)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .when_some(icon, |element, icon| element.child(glyph(icon, 15., color)))
         .when(!label.is_empty(), |element| element.child(label))
@@ -640,9 +651,9 @@ fn icon_action(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(SOFT)))
+        .hover(|style| style.bg(rgb(colors().fill)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(glyph(icon, 17., MUTED))
+        .child(glyph(icon, 17., colors().secondary))
         .tooltip(move |_, cx| cx.new(|_| StudioHint(hint.into())).into())
         .on_click(on_click)
 }
@@ -704,8 +715,8 @@ fn menu_item(
         .gap_2()
         .text_size(px(12.))
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(SOFT)))
-        .child(glyph(icon, 14., MUTED))
+        .hover(|style| style.bg(rgb(colors().fill)))
+        .child(glyph(icon, 14., colors().secondary))
         .child(label)
         .on_click(on_click)
 }

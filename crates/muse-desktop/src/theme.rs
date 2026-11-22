@@ -11,20 +11,92 @@ pub const TABS: f32 = 0.0;
 pub const TOOLBAR: f32 = 44.0;
 pub const STATUS: f32 = 24.0;
 pub const MIN_BROWSER_WIDTH: f32 = 360.0;
-pub const SURFACE: u32 = 0xF7F7F8;
-pub const LINE: u32 = 0xECECEF;
-pub const TEXT: u32 = 0x18181B;
-pub const SECONDARY: u32 = 0x71717A;
-pub const BLUE: u32 = 0x2F6FEB;
-// Modern-minimal palette: near-black primary actions, neutral fills, one blue accent.
-pub const INK: u32 = 0x18181B;
-pub const INK_HOVER: u32 = 0x2E2E33;
-pub const SIDE: u32 = 0xF7F7F8;
-pub const FILL: u32 = 0xF2F2F4;
-pub const FILL_HOVER: u32 = 0xEBEBEE;
-pub const TRACK: u32 = 0xE6E6EA;
-pub const MUTED_TEXT: u32 = 0xA1A1AA;
-pub const DANGER: u32 = 0xD92D20;
+
+use muse_core::ThemeMode;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// Rendering, hover callbacks and separately rendered input/tooltip entities all
+// resolve the same palette. Media pixels and viewer overlays remain untouched.
+static DARK: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub canvas: u32,
+    pub panel: u32,
+    pub surface: u32,
+    pub line: u32,
+    pub text: u32,
+    pub secondary: u32,
+    pub blue: u32,
+    pub primary: u32,
+    pub primary_hover: u32,
+    pub on_primary: u32,
+    pub fill: u32,
+    pub fill_hover: u32,
+    pub track: u32,
+    pub muted: u32,
+    pub danger: u32,
+}
+
+pub const fn palette_for(mode: ThemeMode) -> Palette {
+    match mode {
+        ThemeMode::Light => Palette {
+            canvas: 0xFFFFFF,
+            panel: 0xFFFFFF,
+            surface: 0xF7F7F8,
+            line: 0xECECEF,
+            text: 0x18181B,
+            secondary: 0x71717A,
+            blue: 0x2F6FEB,
+            primary: 0x18181B,
+            primary_hover: 0x2E2E33,
+            on_primary: 0xFFFFFF,
+            fill: 0xF2F2F4,
+            fill_hover: 0xEBEBEE,
+            track: 0xE6E6EA,
+            muted: 0xA1A1AA,
+            danger: 0xD92D20,
+        },
+        ThemeMode::Dark => Palette {
+            canvas: 0x18181B,
+            panel: 0x222226,
+            surface: 0x1D1D21,
+            line: 0x36363E,
+            text: 0xECECF1,
+            secondary: 0xAAAAB5,
+            blue: 0x82AAFF,
+            primary: 0xE5E5EB,
+            primary_hover: 0xFFFFFF,
+            on_primary: 0x18181B,
+            fill: 0x2B2B31,
+            fill_hover: 0x35353D,
+            track: 0x41414B,
+            muted: 0x92929F,
+            danger: 0xFF8A80,
+        },
+    }
+}
+
+pub fn set_mode(mode: ThemeMode) {
+    DARK.store(mode == ThemeMode::Dark, Ordering::Relaxed);
+}
+
+pub fn colors() -> Palette {
+    palette_for(if DARK.load(Ordering::Relaxed) {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
+    })
+}
+
+/// Preserve a component's light-mode refinement while supplying its dark role.
+pub fn tone(light: u32, dark: u32) -> u32 {
+    if DARK.load(Ordering::Relaxed) {
+        dark
+    } else {
+        light
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ChromeLayout {
@@ -89,6 +161,44 @@ impl ChromeLayout {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn both_themes_keep_body_secondary_and_primary_button_text_readable() {
+        fn luminance(color: u32) -> f64 {
+            let channel = |shift: u32| {
+                let value = ((color >> shift) & 255u32) as f64 / 255.;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+        }
+        for mode in [muse_core::ThemeMode::Light, muse_core::ThemeMode::Dark] {
+            let palette = palette_for(mode);
+            for (foreground, background) in [
+                (palette.text, palette.canvas),
+                (palette.text, palette.panel),
+                (palette.secondary, palette.panel),
+                (palette.on_primary, palette.primary),
+            ] {
+                let a = luminance(foreground);
+                let b = luminance(background);
+                let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                assert!(contrast >= 4.5, "{mode:?}: contrast was {contrast}");
+            }
+        }
+    }
+
+    #[test]
+    fn night_mode_uses_dark_surfaces_without_recoloring_media() {
+        let dark = palette_for(muse_core::ThemeMode::Dark);
+        assert!(dark.canvas < 0x303030);
+        assert!(dark.panel < 0x303030);
+        assert!(dark.surface < 0x303030);
+        assert!(dark.text > 0xCCCCCC);
+    }
 
     #[test]
     fn browser_geometry_tracks_sidebar_and_inspector_midway_through_transition() {

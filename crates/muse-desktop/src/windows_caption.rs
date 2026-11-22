@@ -20,9 +20,14 @@ const CAPTION_SUBCLASS: usize = 0x4D55_5345;
 // f32::MAX until the first frame keeps the previous whole-bar behaviour.
 static TABS_START: AtomicU32 = AtomicU32::new(0x7F7F_FFFF);
 static DRAG_START: AtomicU32 = AtomicU32::new(0x7F7F_FFFF);
+static DRAG_END: AtomicU32 = AtomicU32::new(0x7F7F_FFFF);
 
 pub fn set_drag_start(drag_start: f32) {
     DRAG_START.store(drag_start.to_bits(), Ordering::Relaxed);
+}
+
+pub fn set_drag_end(drag_end: f32) {
+    DRAG_END.store(drag_end.to_bits(), Ordering::Relaxed);
 }
 
 /// A full-window overlay (image viewer) owns the title bar: its buttons must
@@ -35,6 +40,18 @@ pub fn set_overlay(open: bool) {
 
 pub fn set_tabs_start(tabs_start: f32) {
     TABS_START.store(tabs_start.to_bits(), Ordering::Relaxed);
+}
+
+fn caption_drag_region(
+    x: f32,
+    y: f32,
+    width: f32,
+    tabs_start: f32,
+    drag_start: f32,
+    drag_end: f32,
+) -> bool {
+    let outside_tabs = x < tabs_start || x >= drag_start;
+    x >= 48. && x < (width - 138.).min(drag_end) && y >= 4. && outside_tabs
 }
 
 pub struct CaptionBridge(HWND);
@@ -103,14 +120,18 @@ unsafe extern "system" fn caption_proc(
                     if (0.0..crate::theme::TITLEBAR).contains(&y) {
                         let tabs_start = f32::from_bits(TABS_START.load(Ordering::Relaxed));
                         let drag_start = f32::from_bits(DRAG_START.load(Ordering::Relaxed));
-                        let outside_tabs = x < tabs_start || x >= drag_start;
-                        return LRESULT(
-                            if x >= 48. && x < width - 138. && y >= 4. && outside_tabs {
-                                HTCAPTION
-                            } else {
-                                HTCLIENT
-                            } as isize,
-                        );
+                        return LRESULT(if caption_drag_region(
+                            x,
+                            y,
+                            width,
+                            tabs_start,
+                            drag_start,
+                            f32::from_bits(DRAG_END.load(Ordering::Relaxed)),
+                        ) {
+                            HTCAPTION
+                        } else {
+                            HTCLIENT
+                        } as isize);
                     }
                 }
             }
@@ -125,5 +146,20 @@ unsafe extern "system" fn caption_proc(
             let _ = RemoveWindowSubclass(hwnd, Some(caption_proc), CAPTION_SUBCLASS);
         }
         DefSubclassProc(hwnd, message, wparam, lparam)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::caption_drag_region;
+
+    #[test]
+    fn theme_switch_and_window_controls_do_not_start_a_native_caption_drag() {
+        for x in [1120., 1150., 1200., 1230., 1320.] {
+            assert!(!caption_drag_region(x, 18., 1360., 300., 650., 1120.));
+        }
+        assert!(caption_drag_region(800., 18., 1360., 300., 650., 1120.));
+        assert!(!caption_drag_region(400., 18., 1360., 300., 650., 1120.));
+        assert!(!caption_drag_region(22., 18., 1360., 300., 650., 1120.));
     }
 }

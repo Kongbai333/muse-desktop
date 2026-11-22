@@ -1,3 +1,4 @@
+use crate::theme::{colors, tone};
 use crate::{
     browser::{BrowserMessage, BrowserPool, BrowserRequest},
     input::TextInput,
@@ -99,6 +100,7 @@ pub struct MuseWindow {
     status: String,
     save_enabled: bool,
     pending_save: Option<Instant>,
+    display: muse_core::DisplayPreferences,
     remove_confirmation: Option<AccountId>,
     markers: HashMap<AccountId, String>,
     ready_pages: HashMap<muse_core::TabId, String>,
@@ -151,6 +153,8 @@ impl MuseWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let display = muse_core::DisplayPreferences::load(&data_dir);
+        crate::theme::set_mode(display.theme);
         let (mut workspace, mut startup_error) =
             match Workspace::load(&data_dir.join("workspace.json")) {
                 Ok(state) => (state, None),
@@ -203,6 +207,8 @@ impl MuseWindow {
             this.capture_window(window);
         });
         cx.on_app_quit(|this, _| {
+            this.capture_page_zoom();
+            this.persist_display();
             this.clear_cookie_dialog();
             this.persist();
             this.persist_window();
@@ -301,7 +307,7 @@ impl MuseWindow {
         }
         Self {
             workspace,
-            browsers: BrowserPool::new(sender, data_dir.clone()),
+            browsers: BrowserPool::new(sender, data_dir.clone(), display),
             receiver,
             session_probe: crate::session_probe::SessionProbe::new(&data_dir),
             data_dir,
@@ -322,6 +328,7 @@ impl MuseWindow {
                 .unwrap_or_else(|| "账号数据保存在本机".into()),
             save_enabled: startup_error.is_none(),
             pending_save: None,
+            display,
             remove_confirmation: None,
             markers: HashMap::new(),
             ready_pages: HashMap::new(),
@@ -577,6 +584,57 @@ impl MuseWindow {
         self.pending_save = None;
     }
 
+    fn persist_display(&mut self) {
+        if let Err(error) = self.display.save(&self.data_dir) {
+            self.status = error;
+        }
+    }
+
+    /// Read the actual native factor, including browser-handled Ctrl + wheel.
+    fn capture_page_zoom(&mut self) -> bool {
+        let Some(identity) = self.workspace.active_browser_identity() else {
+            return false;
+        };
+        let Some(factor) = self.browsers.zoom(identity.tab_id) else {
+            return false;
+        };
+        if !self.display.set_page_zoom(factor) {
+            return false;
+        }
+        self.browsers.remember_zoom(self.display.page_zoom());
+        self.persist_display();
+        true
+    }
+
+    fn set_theme(
+        &mut self,
+        mode: muse_core::ThemeMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.display.theme == mode {
+            return;
+        }
+        self.display.theme = mode;
+        crate::theme::set_mode(mode);
+        self.status = match mode {
+            muse_core::ThemeMode::Light => "已切换到白天模式",
+            muse_core::ThemeMode::Dark => "已切换到晚上模式",
+        }
+        .into();
+        if let Err(error) = self.browsers.set_theme(mode) {
+            self.status = format!("客户端主题已切换，网页主题设置失败：{error}");
+        }
+        // A snapshot from the previous palette must not cover the new page.
+        self.page_snapshot = None;
+        self.freeze_frame = None;
+        self.freeze_checked = false;
+        self.snapshot_request = None;
+        self.persist_display();
+        window.refresh();
+        cx.notify();
+    }
+
     fn ensure_active(&mut self, window: &Window) {
         self.browsers.retain_registered(&self.workspace);
         if self.show_start_page {
@@ -646,10 +704,14 @@ impl MuseWindow {
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut changed = self.poll_proxy_editor(cx);
         changed |= self.poll_account_dialog(cx);
-        changed |= self.browsers.zoom_changed(
+        let zoom_changed = self.browsers.zoom_changed(
             self.visible_browser_identity()
                 .map(|identity| identity.tab_id),
         );
+        if zoom_changed {
+            self.capture_page_zoom();
+            changed = true;
+        }
         self.avatars.retain(&self.workspace);
         let now = crate::page_observer::now_ms();
         for account in &mut self.workspace.accounts {
@@ -1222,7 +1284,10 @@ impl MuseWindow {
                 crate::browser::zoom_step(current, direction)
             };
             match self.browsers.set_zoom(identity.tab_id, target) {
-                Ok(()) => self.status = format!("页面缩放 {:.0}%", target * 100.),
+                Ok(()) => {
+                    self.status = format!("页面缩放 {:.0}%", target * 100.);
+                    self.capture_page_zoom();
+                }
                 Err(error) => self.status = format!("无法缩放页面：{error}"),
             }
             cx.notify();
@@ -1338,6 +1403,7 @@ impl MuseWindow {
         if self.has_browser_overlay() {
             return;
         }
+        self.capture_page_zoom();
         if self.show_start_page || self.workspace.active_account_id() != Some(id) {
             self.navigation_transition = crate::motion::TransitionState::entering();
         }
@@ -1354,6 +1420,7 @@ impl MuseWindow {
         if self.has_browser_overlay() {
             return;
         }
+        self.capture_page_zoom();
         self.navigation_transition = crate::motion::TransitionState::entering();
         self.show_start_page = false;
         if let Some(account) = self.workspace.active_account_id() {
@@ -1377,6 +1444,7 @@ impl MuseWindow {
     }
 
     fn close_tab_id(&mut self, id: muse_core::TabId, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_page_zoom();
         if self
             .workspace
             .active_browser_identity()

@@ -103,6 +103,18 @@ fn set_memory_target(tab: &HostedTab, low: bool) {
     }
 }
 
+fn webview_theme(mode: muse_core::ThemeMode) -> wry::Theme {
+    match mode {
+        muse_core::ThemeMode::Light => wry::Theme::Light,
+        muse_core::ThemeMode::Dark => wry::Theme::Dark,
+    }
+}
+
+fn page_background(mode: muse_core::ThemeMode) -> wry::RGBA {
+    let color = crate::theme::palette_for(mode).canvas;
+    ((color >> 16) as u8, (color >> 8) as u8, color as u8, 255)
+}
+
 pub struct BrowserPool {
     tabs: HashMap<muse_core::TabId, HostedTab>,
     sender: Sender<BrowserMessage>,
@@ -110,6 +122,7 @@ pub struct BrowserPool {
     last_bounds: Cell<Option<[f64; 4]>>,
     last_zoom: Cell<Option<(muse_core::TabId, i64)>>,
     data_root: PathBuf,
+    display: Cell<muse_core::DisplayPreferences>,
     bridges: HashMap<muse_core::AccountId, Arc<ProxyBridge>>,
     failures: HashMap<BrowserIdentity, String>,
     closing: HashMap<muse_core::AccountId, Vec<ClosingProcess>>,
@@ -229,7 +242,11 @@ const KEYBOARD_BRIDGE: &str = r#"
 "#;
 
 impl BrowserPool {
-    pub fn new(sender: Sender<BrowserMessage>, data_root: PathBuf) -> Self {
+    pub fn new(
+        sender: Sender<BrowserMessage>,
+        data_root: PathBuf,
+        display: muse_core::DisplayPreferences,
+    ) -> Self {
         Self {
             tabs: HashMap::new(),
             sender,
@@ -237,6 +254,7 @@ impl BrowserPool {
             last_bounds: Cell::new(None),
             last_zoom: Cell::new(None),
             data_root,
+            display: Cell::new(display),
             bridges: HashMap::new(),
             failures: HashMap::new(),
             closing: HashMap::new(),
@@ -358,6 +376,8 @@ impl BrowserPool {
         let diagnostic_origin = diagnostic_origin.map(str::to_owned);
         let mut builder = WebViewBuilder::new_with_web_context(&mut context)
             .with_url("about:blank")
+            .with_theme(webview_theme(self.display.get().theme))
+            .with_background_color(page_background(self.display.get().theme))
             .with_bounds(bounds)
             .with_focused(false)
             .with_visible(false)
@@ -460,6 +480,8 @@ impl BrowserPool {
         let actual = take_pwstr(actual);
         self.profiles
             .verify(identity.account_id, profile, Path::new(&actual))?;
+        view.zoom(self.display.get().page_zoom())
+            .map_err(|error| format!("无法恢复页面缩放：{error}"))?;
         install_navigation_errors(&view, identity, self.sender.clone(), gate.clone())?;
         view.load_url(url).map_err(|_| "无法打开账号页面")?;
         self.tabs.insert(
@@ -500,7 +522,34 @@ impl BrowserPool {
         let tab = self.tabs.get(&id).ok_or("页面尚未打开")?;
         tab.view
             .zoom(factor.clamp(ZOOM_LEVELS[0], ZOOM_LEVELS[ZOOM_LEVELS.len() - 1]))
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.remember_zoom(factor);
+        Ok(())
+    }
+
+    pub fn remember_zoom(&self, factor: f64) {
+        let mut display = self.display.get();
+        if !display.set_page_zoom(factor) {
+            return;
+        }
+        self.display.set(display);
+        for tab in self.tabs.values() {
+            let _ = tab.view.zoom(display.page_zoom());
+        }
+    }
+
+    pub fn set_theme(&self, mode: muse_core::ThemeMode) -> Result<(), String> {
+        let mut display = self.display.get();
+        display.theme = mode;
+        self.display.set(display);
+        let mut error = None;
+        for tab in self.tabs.values() {
+            if let Err(reason) = tab.view.set_theme(webview_theme(mode)) {
+                error.get_or_insert_with(|| reason.to_string());
+            }
+            let _ = tab.view.set_background_color(page_background(mode));
+        }
+        error.map_or(Ok(()), Err)
     }
 
     /// True once per change of the visible tab's zoom, including Ctrl + wheel

@@ -654,11 +654,11 @@ impl MuseWindow {
                     div()
                         .size(px(44.))
                         .rounded_full()
-                        .bg(rgb(FILL))
+                        .bg(rgb(colors().fill))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(glyph("shield-check", 20., SECONDARY)),
+                        .child(glyph("shield-check", 20., colors().secondary)),
                 )
                 .child(
                     div()
@@ -672,7 +672,7 @@ impl MuseWindow {
                         .max_w(px(260.))
                         .text_size(px(12.))
                         .line_height(px(19.))
-                        .text_color(rgb(SECONDARY))
+                        .text_color(rgb(colors().secondary))
                         .text_center()
                         .child("新增一个代理后，可以在编辑账号时为账号选择它。多个账号可以共用同一个代理。"),
                 );
@@ -703,13 +703,17 @@ impl MuseWindow {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .hover(|style| style.bg(rgb(FILL)))
+                    .hover(|style| style.bg(rgb(colors().fill)))
                     .child(
                         div()
                             .size(px(8.))
                             .flex_none()
                             .rounded_full()
-                            .bg(rgb(if count > 0 { 0x16A34A } else { 0xD4D4D8 })),
+                            .bg(rgb(if count > 0 {
+                                0x16A34A
+                            } else {
+                                tone(0xD4D4D8, 0x60606D)
+                            })),
                     )
                     .child(
                         div()
@@ -722,7 +726,7 @@ impl MuseWindow {
                                 div()
                                     .text_size(px(13.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(TEXT))
+                                    .text_color(rgb(colors().text))
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .child(profile.name.clone()),
@@ -730,7 +734,7 @@ impl MuseWindow {
                             .child(
                                 div()
                                     .text_size(px(11.))
-                                    .text_color(rgb(SECONDARY))
+                                    .text_color(rgb(colors().secondary))
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .child(format!(
@@ -820,11 +824,21 @@ impl MuseWindow {
                     .items_center()
                     .gap_3()
                     .when(index > 0, |element| {
-                        element.border_t_1().border_color(rgb(LINE))
+                        element.border_t_1().border_color(rgb(colors().line))
                     })
-                    .bg(rgb(if active { 0xF7F9FE } else { 0xFFFFFF }))
+                    .bg(rgb(if active {
+                        tone(0xF7F9FE, 0x24334F)
+                    } else {
+                        colors().panel
+                    }))
                     .cursor_pointer()
-                    .hover(move |style| style.bg(rgb(if active { 0xF7F9FE } else { 0xFAFAFB })))
+                    .hover(move |style| {
+                        style.bg(rgb(if active {
+                            tone(0xF7F9FE, 0x24334F)
+                        } else {
+                            tone(0xFAFAFB, 0x1D1D21)
+                        }))
+                    })
                     .child(radio_mark(active))
                     .child(
                         div()
@@ -837,7 +851,7 @@ impl MuseWindow {
                                 div()
                                     .text_size(px(13.))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(rgb(TEXT))
+                                    .text_color(rgb(colors().text))
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .child(title),
@@ -845,7 +859,7 @@ impl MuseWindow {
                             .child(
                                 div()
                                     .text_size(px(11.))
-                                    .text_color(rgb(SECONDARY))
+                                    .text_color(rgb(colors().secondary))
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .child(detail),
@@ -884,7 +898,7 @@ impl MuseWindow {
                     .overflow_y_scroll()
                     .rounded_lg()
                     .border_1()
-                    .border_color(rgb(0xE4E4E7))
+                    .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
                     .children(rows),
             )
             .when(matches!(dialog.route, RouteChoice::Pool(_)), |element| {
@@ -904,7 +918,7 @@ impl MuseWindow {
                 element.child(
                     div()
                         .text_size(px(11.))
-                        .text_color(rgb(MUTED_TEXT))
+                        .text_color(rgb(colors().muted))
                         .child("还没有代理。点「管理代理池」新增后，这里就可以选择。"),
                 )
             })
@@ -920,8 +934,16 @@ impl MuseWindow {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(rgba(if selected { 0xFFFFFFFF } else { 0x00000000 }))
-                .text_color(rgb(if selected { TEXT } else { SECONDARY }))
+                .bg(rgba(if selected {
+                    (colors().panel << 8) | 0xFF
+                } else {
+                    0x00000000
+                }))
+                .text_color(rgb(if selected {
+                    colors().text
+                } else {
+                    colors().secondary
+                }))
                 .text_size(px(12.))
                 .font_weight(if selected {
                     FontWeight::SEMIBOLD
@@ -966,11 +988,11 @@ impl MuseWindow {
                 cx.notify();
             }),
         );
-        let (dot, tone) = match (dialog.pending, dialog.test_ok) {
-            (true, _) => (0xE8A317, SECONDARY),
-            (false, Some(true)) => (0x16A34A, 0x15803D),
-            (false, Some(false)) => (DANGER, 0xB42318),
-            _ => (0xD4D4D8, SECONDARY),
+        let (dot, status_color) = match (dialog.pending, dialog.test_ok) {
+            (true, _) => (0xE8A317, colors().secondary),
+            (false, Some(true)) => (0x16A34A, tone(0x15803D, 0x77D4A4)),
+            (false, Some(false)) => (colors().danger, tone(0xB42318, 0xFF9B94)),
+            _ => (tone(0xD4D4D8, 0x60606D), colors().secondary),
         };
         div()
             .flex()
@@ -983,24 +1005,24 @@ impl MuseWindow {
                     .px_3()
                     .rounded_lg()
                     .border_1()
-                    .border_color(rgb(0xD4D4D8))
+                    .border_color(rgb(tone(0xD4D4D8, 0x60606D)))
                     .flex()
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(FILL)))
-                    .child(glyph("copy", 14., SECONDARY))
+                    .hover(|style| style.bg(rgb(colors().fill)))
+                    .child(glyph("copy", 14., colors().secondary))
                     .child(
                         div()
                             .flex_1()
                             .text_size(px(12.))
-                            .text_color(rgb(TEXT))
+                            .text_color(rgb(colors().text))
                             .child("从剪贴板粘贴代理地址"),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(rgb(MUTED_TEXT))
+                            .text_color(rgb(colors().muted))
                             .child("自动识别协议与账密"),
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.paste_dialog_proxy(cx))),
@@ -1015,7 +1037,7 @@ impl MuseWindow {
                         div()
                             .p(px(3.))
                             .rounded_lg()
-                            .bg(rgb(FILL))
+                            .bg(rgb(colors().fill))
                             .flex()
                             .gap_1()
                             .children(ProxyProtocol::ALL.map(|protocol| {
@@ -1076,9 +1098,9 @@ impl MuseWindow {
                 div()
                     .p_3()
                     .rounded_lg()
-                    .bg(rgb(0xFAFAFB))
+                    .bg(rgb(tone(0xFAFAFB, 0x1D1D21)))
                     .border_1()
-                    .border_color(rgb(LINE))
+                    .border_color(rgb(colors().line))
                     .flex()
                     .items_center()
                     .gap_3()
@@ -1089,7 +1111,7 @@ impl MuseWindow {
                             .min_w_0()
                             .text_size(px(12.))
                             .line_height(px(18.))
-                            .text_color(rgb(tone))
+                            .text_color(rgb(status_color))
                             .child(if dialog.message.is_empty() {
                                 "测试会连接 muse.ai:443，不会保存配置".to_owned()
                             } else {
@@ -1156,11 +1178,11 @@ impl MuseWindow {
             .flex()
             .items_center()
             .justify_center()
-            .hover(|s| s.bg(rgb(FILL)))
+            .hover(|s| s.bg(rgb(colors().fill)))
             .child(glyph(
                 if sub_screen { "arrow-left" } else { "x" },
                 15.,
-                SECONDARY,
+                colors().secondary,
             ))
             .on_click(cx.listener(|this, _, window, cx| this.close_account_dialog(window, cx)));
         let heading = div()
@@ -1173,14 +1195,14 @@ impl MuseWindow {
                 div()
                     .text_size(px(16.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(TEXT))
+                    .text_color(rgb(colors().text))
                     .child(title),
             )
             .child(
                 div()
                     .text_size(px(12.))
                     .line_height(px(18.))
-                    .text_color(rgb(SECONDARY))
+                    .text_color(rgb(colors().secondary))
                     .child(subtitle),
             );
         let header = if drawer {
@@ -1189,7 +1211,7 @@ impl MuseWindow {
                 .px_4()
                 .py_3()
                 .border_b_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(colors().line))
                 .flex()
                 .items_center()
                 .gap_2()
@@ -1206,8 +1228,8 @@ impl MuseWindow {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .hover(|s| s.bg(rgb(FILL)))
-                            .child(glyph("x", 15., SECONDARY))
+                            .hover(|s| s.bg(rgb(colors().fill)))
+                            .child(glyph("x", 15., colors().secondary))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.close_account_dialog(window, cx)
                             })),
@@ -1249,13 +1271,13 @@ impl MuseWindow {
                     .child(
                         div()
                             .text_size(px(14.))
-                            .text_color(rgb(TEXT))
+                            .text_color(rgb(colors().text))
                             .child(format!("确认删除「{}」？", dialog.name.read(cx).text())),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(rgb(SECONDARY))
+                            .text_color(rgb(colors().secondary))
                             .child("只能删除没有账号使用的代理。"),
                     ),
             ),
@@ -1267,14 +1289,14 @@ impl MuseWindow {
                     .child(
                         div()
                             .text_size(px(14.))
-                            .text_color(rgb(TEXT))
+                            .text_color(rgb(colors().text))
                             .child(format!("确认移除「{}」？", dialog.name.read(cx).text())),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
                             .line_height(px(19.))
-                            .text_color(rgb(SECONDARY))
+                            .text_color(rgb(colors().secondary))
                             .child("账号的浏览器数据和登录状态会保留在本机，之后可以重新导入。"),
                     ),
             ),
@@ -1288,10 +1310,10 @@ impl MuseWindow {
                     .px_3()
                     .py_2()
                     .rounded_lg()
-                    .bg(rgb(0xFEF3F2))
+                    .bg(rgb(tone(0xFEF3F2, 0x3D2225)))
                     .text_size(px(12.))
                     .line_height(px(19.))
-                    .text_color(rgb(0xB42318))
+                    .text_color(rgb(tone(0xB42318, 0xFF9B94)))
                     .child(dialog.message.clone()),
             );
         }
@@ -1336,7 +1358,7 @@ impl MuseWindow {
                 .flex_none()
                 .p_4()
                 .border_t_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(colors().line))
                 .flex()
                 .gap_2()
                 .child(cancel.flex_1())
@@ -1356,7 +1378,7 @@ impl MuseWindow {
                         div()
                             .flex_1()
                             .text_size(px(11.))
-                            .text_color(rgb(MUTED_TEXT))
+                            .text_color(rgb(colors().muted))
                             .child("Ctrl+Enter 保存 · Esc 取消"),
                     )
                 })
@@ -1369,7 +1391,7 @@ impl MuseWindow {
             .size_full()
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .bg(rgb(0xFFFFFF))
+            .bg(rgb(colors().panel))
             .flex()
             .flex_col()
             .child(header)
@@ -1385,7 +1407,7 @@ impl MuseWindow {
                 .w(px(width))
                 .overflow_hidden()
                 .child(crate::motion::slide_from_right(
-                    panel.border_l_1().border_color(rgb(LINE)),
+                    panel.border_l_1().border_color(rgb(colors().line)),
                     transition,
                     self.motion_policy,
                     24.,
@@ -1405,7 +1427,7 @@ impl MuseWindow {
                         .max_h(px(max_height))
                         .rounded(px(14.))
                         .border_1()
-                        .border_color(rgb(0xE4E4E7))
+                        .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
                         .shadow_lg(),
                     transition,
                     self.motion_policy,
@@ -1460,9 +1482,17 @@ fn dialog_button(
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let (background, hover, text) = match kind {
-        ButtonKind::Primary => (INK, INK_HOVER, 0xFFFFFF),
-        ButtonKind::Secondary => (FILL, FILL_HOVER, TEXT),
-        ButtonKind::Danger => (DANGER, 0xB42318, 0xFFFFFF),
+        ButtonKind::Primary => (
+            colors().primary,
+            colors().primary_hover,
+            colors().on_primary,
+        ),
+        ButtonKind::Secondary => (colors().fill, colors().fill_hover, colors().text),
+        ButtonKind::Danger => (
+            colors().danger,
+            tone(0xB42318, 0xFF9B94),
+            colors().on_primary,
+        ),
     };
     let label: SharedString = label.into();
     div()
@@ -1494,9 +1524,9 @@ fn link_button(
         .px_1()
         .rounded_sm()
         .text_size(px(12.))
-        .text_color(rgb(BLUE))
+        .text_color(rgb(colors().blue))
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(0xEEF3FE)))
+        .hover(|style| style.bg(rgb(tone(0xEEF3FE, 0x24334F))))
         .on_click(on_click)
         .child(label)
 }
@@ -1507,13 +1537,17 @@ fn radio_mark(active: bool) -> Div {
         .flex_none()
         .rounded_full()
         .border_1()
-        .border_color(rgb(if active { BLUE } else { 0xC9C9CF }))
-        .bg(rgb(0xFFFFFF))
+        .border_color(rgb(if active {
+            colors().blue
+        } else {
+            tone(0xC9C9CF, 0x60606D)
+        }))
+        .bg(rgb(colors().panel))
         .flex()
         .items_center()
         .justify_center()
         .when(active, |element| {
-            element.child(div().size(px(8.)).rounded_full().bg(rgb(BLUE)))
+            element.child(div().size(px(8.)).rounded_full().bg(rgb(colors().blue)))
         })
 }
 
@@ -1535,19 +1569,27 @@ fn checkbox_row(
                 .flex_none()
                 .rounded(px(4.))
                 .border_1()
-                .border_color(rgb(if checked { BLUE } else { 0xC9C9CF }))
-                .bg(rgb(if checked { BLUE } else { 0xFFFFFF }))
+                .border_color(rgb(if checked {
+                    colors().blue
+                } else {
+                    tone(0xC9C9CF, 0x60606D)
+                }))
+                .bg(rgb(if checked {
+                    colors().blue
+                } else {
+                    colors().panel
+                }))
                 .flex()
                 .items_center()
                 .justify_center()
                 .text_size(px(11.))
-                .text_color(rgb(0xFFFFFF))
+                .text_color(rgb(colors().on_primary))
                 .child(if checked { "✓" } else { "" }),
         )
         .child(
             div()
                 .text_size(px(12.))
-                .text_color(rgb(SECONDARY))
+                .text_color(rgb(colors().secondary))
                 .child(label),
         )
         .on_click(on_click)
@@ -1557,7 +1599,7 @@ fn field_label(label: &'static str) -> Div {
     div()
         .text_size(px(12.))
         .font_weight(FontWeight::MEDIUM)
-        .text_color(rgb(SECONDARY))
+        .text_color(rgb(colors().secondary))
         .child(label)
 }
 
@@ -1566,8 +1608,8 @@ fn field_box(input: Entity<TextInput>) -> Div {
         .rounded_lg()
         .overflow_hidden()
         .border_1()
-        .border_color(rgb(0xE4E4E7))
-        .bg(rgb(0xFFFFFF))
+        .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+        .bg(rgb(colors().panel))
         .child(input)
 }
 

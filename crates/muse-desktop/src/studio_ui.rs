@@ -12,12 +12,6 @@ pub(super) enum StudioPanel {
     EntryMenu(uuid::Uuid, Point<Pixels>),
 }
 
-pub(super) const CANVAS: u32 = 0xFFFFFF;
-pub(super) const INK: u32 = 0x18181B;
-pub(super) const MUTED: u32 = 0x71717A;
-pub(super) const ACCENT: u32 = 0x2F6FEB;
-pub(super) const SOFT: u32 = 0xF2F2F4;
-
 impl MuseWindow {
     pub(super) fn open_studio_panel(&mut self, panel: StudioPanel) {
         self.studio_panel = Some((panel, TransitionState::entering()));
@@ -176,7 +170,9 @@ impl MuseWindow {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .when(!active, |element| element.hover(|s| s.bg(rgb(SOFT))))
+                    .when(!active, |element| {
+                        element.hover(|s| s.bg(rgb(colors().fill)))
+                    })
                     .when(active, |element| {
                         element.child(crate::motion::animate(
                             div()
@@ -184,8 +180,8 @@ impl MuseWindow {
                                 .inset_0()
                                 .rounded_lg()
                                 .border_1()
-                                .border_color(rgb(0xE4E4E7))
-                                .bg(rgb(0xFFFFFF))
+                                .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+                                .bg(rgb(colors().panel))
                                 .shadow_sm(),
                             self.studio.conversation_transition,
                             self.motion_policy,
@@ -210,7 +206,7 @@ impl MuseWindow {
                                     } else {
                                         FontWeight::NORMAL
                                     })
-                                    .text_color(rgb(INK))
+                                    .text_color(rgb(colors().text))
                                     .child(self.studio.title(id)),
                             )
                             .child(
@@ -220,7 +216,10 @@ impl MuseWindow {
                                     .gap_1()
                                     .when(running, |element| {
                                         element.child(
-                                            div().size(px(6.)).rounded_full().bg(rgb(ACCENT)),
+                                            div()
+                                                .size(px(6.))
+                                                .rounded_full()
+                                                .bg(rgb(colors().blue)),
                                         )
                                     })
                                     .child(
@@ -228,7 +227,7 @@ impl MuseWindow {
                                             .overflow_hidden()
                                             .whitespace_nowrap()
                                             .text_size(px(11.))
-                                            .text_color(rgb(MUTED))
+                                            .text_color(rgb(colors().secondary))
                                             .child(detail),
                                     ),
                             ),
@@ -244,18 +243,20 @@ impl MuseWindow {
                             .items_center()
                             .justify_center()
                             .text_size(px(11.))
-                            .text_color(rgb(0xFFFFFF))
-                            .when(confirming, |element| element.bg(rgb(crate::theme::DANGER)))
+                            .text_color(rgb(colors().on_primary))
+                            .when(confirming, |element| {
+                                element.bg(rgb(crate::theme::colors().danger))
+                            })
                             .when(!confirming, |element| {
                                 element
                                     .opacity(0.)
                                     .group_hover("conversation-row", |s| s.opacity(1.))
-                                    .hover(|s| s.bg(rgb(0xE9EAEC)))
+                                    .hover(|s| s.bg(rgb(tone(0xE9EAEC, 0x35353D))))
                             })
                             .child(if confirming {
                                 div().child("删除")
                             } else {
-                                div().child(glyph("trash", 13., MUTED))
+                                div().child(glyph("trash", 13., colors().secondary))
                             })
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -274,9 +275,9 @@ impl MuseWindow {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(rgb(0xFAFAFB))
+            .bg(rgb(tone(0xFAFAFB, 0x1D1D21)))
             .border_r_1()
-            .border_color(rgb(0xECECEF))
+            .border_color(rgb(tone(0xECECEF, 0x36363E)))
             .child(
                 div()
                     .h(px(54.))
@@ -289,13 +290,13 @@ impl MuseWindow {
                         div()
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(INK))
+                            .text_color(rgb(colors().text))
                             .child("会话"),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors().secondary))
                             .child(self.studio.conversations.len().to_string()),
                     ),
             )
@@ -307,19 +308,19 @@ impl MuseWindow {
                         .px_3()
                         .rounded_lg()
                         .border_1()
-                        .border_color(rgb(0xE4E4E7))
-                        .bg(rgb(0xFFFFFF))
+                        .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+                        .bg(rgb(colors().panel))
                         .flex()
                         .items_center()
                         .gap_2()
                         .cursor_pointer()
-                        .hover(|s| s.bg(rgb(SOFT)))
-                        .child(glyph("plus", 15., INK))
+                        .hover(|s| s.bg(rgb(colors().fill)))
+                        .child(glyph("plus", 15., colors().text))
                         .child(
                             div()
                                 .flex_1()
                                 .text_size(px(13.))
-                                .text_color(rgb(INK))
+                                .text_color(rgb(colors().text))
                                 .child("新建会话"),
                         )
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -383,8 +384,8 @@ impl MuseWindow {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(SOFT)))
-                .child(glyph(icon, 15., MUTED))
+                .hover(|s| s.bg(rgb(colors().fill)))
+                .child(glyph(icon, 15., colors().secondary))
                 .tooltip(move |_, cx| cx.new(|_| StudioHint(hint.into())).into())
         };
         let header = div()
@@ -426,7 +427,7 @@ impl MuseWindow {
                     .whitespace_nowrap()
                     .text_size(px(14.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(INK))
+                    .text_color(rgb(colors().text))
                     .child(title),
             )
             .child(
@@ -437,9 +438,9 @@ impl MuseWindow {
                     .flex()
                     .items_center()
                     .rounded_lg()
-                    .bg(rgb(SOFT))
+                    .bg(rgb(colors().fill))
                     .text_size(px(12.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(colors().secondary))
                     .child(format!(
                         "{running} / {} 个账号在线",
                         self.workspace.accounts.len()
@@ -473,14 +474,14 @@ impl MuseWindow {
                     div()
                         .text_size(px(30.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(INK))
+                        .text_color(rgb(colors().text))
                         .child("从一个想法开始"),
                 )
                 .child(
                     div()
                         .mt(px(12.))
                         .text_size(px(14.))
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(colors().secondary))
                         .child(
                             "描述画面，或者先从下面任选一句改起。每个会话使用独立的 Muse 对话。",
                         ),
@@ -494,18 +495,18 @@ impl MuseWindow {
                         .py(px(13.))
                         .rounded(px(14.))
                         .border_1()
-                        .border_color(rgb(0xE4E4E7))
+                        .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
                         .flex()
                         .items_start()
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(SOFT)))
+                        .hover(|style| style.bg(rgb(colors().fill)))
                         .child(
                             div()
                                 .w(px(84.))
                                 .flex_none()
                                 .text_size(px(12.))
                                 .line_height(px(20.))
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(colors().secondary))
                                 .child(kind),
                         )
                         .child(
@@ -514,7 +515,7 @@ impl MuseWindow {
                                 .min_w_0()
                                 .text_size(px(13.5))
                                 .line_height(px(20.))
-                                .text_color(rgb(INK))
+                                .text_color(rgb(colors().text))
                                 .child(text),
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -581,9 +582,9 @@ impl MuseWindow {
             .min_h_0()
             .overflow_hidden()
             .flex()
-            .bg(rgb(CANVAS))
+            .bg(rgb(colors().canvas))
             .text_size(px(14.))
-            .text_color(rgb(INK))
+            .text_color(rgb(colors().text))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -721,11 +722,11 @@ pub(super) fn action_button(
         .items_center()
         .gap_1()
         .text_size(px(12.))
-        .text_color(rgb(INK))
+        .text_color(rgb(colors().text))
         .cursor_pointer()
-        .hover(|s| s.bg(rgb(SOFT)))
+        .hover(|s| s.bg(rgb(colors().fill)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(glyph(icon, 14., MUTED))
+        .child(glyph(icon, 14., colors().secondary))
         .when(!label.is_empty(), |element| element.child(label))
         .on_click(on_click)
 }

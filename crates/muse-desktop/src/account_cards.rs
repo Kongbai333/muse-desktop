@@ -1,6 +1,5 @@
 use super::chrome::{avatar, glyph, icon_button};
 use super::*;
-use crate::theme::*;
 use gpui::MouseDownEvent;
 
 fn reset_label(at: Option<u64>) -> String {
@@ -49,10 +48,6 @@ fn extra_pill(state: &muse_core::ExtraQuotaState) -> String {
 }
 
 const SEGMENTS: usize = 20;
-/// Card text is a soft slate instead of near-black.
-const CARD_INK: u32 = 0x3F3F46;
-const CARD_MUTED_INK: u32 = 0x71717A;
-
 fn invite_value(state: &muse_core::ExtraQuotaState) -> String {
     match state {
         muse_core::ExtraQuotaState::Known(_) => extra_pill(state)
@@ -81,16 +76,16 @@ fn sidebar_nav(
         .gap_3()
         .rounded_lg()
         .text_size(px(13.))
-        .text_color(rgb(SECONDARY))
+        .text_color(rgb(colors().secondary))
         .cursor_pointer()
-        .hover(|s| s.bg(rgb(FILL_HOVER)))
-        .child(glyph(icon, 16., SECONDARY))
+        .hover(|s| s.bg(rgb(colors().fill_hover)))
+        .child(glyph(icon, 16., colors().secondary))
         .child(label)
         .when_some(trailing, |element, text| {
             element.child(div().flex_1()).child(
                 div()
                     .text_size(px(11.))
-                    .text_color(rgb(MUTED_TEXT))
+                    .text_color(rgb(colors().muted))
                     .child(text),
             )
         })
@@ -160,7 +155,7 @@ impl MuseWindow {
         } else if used.is_some_and(|value| value >= 90.) {
             0xF79009
         } else {
-            BLUE
+            colors().blue
         };
         div()
             .id(id)
@@ -175,7 +170,7 @@ impl MuseWindow {
             .rounded_xl()
             .cursor_pointer()
             .when(!active, |element| {
-                element.hover(|style| style.bg(rgb(FILL_HOVER)))
+                element.hover(|style| style.bg(rgb(colors().fill_hover)))
             })
             .when(active, |element| {
                 element.child(
@@ -224,9 +219,9 @@ impl MuseWindow {
                                             .text_size(px(14.))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(rgb(if exhausted && !active {
-                                                MUTED_TEXT
+                                                colors().muted
                                             } else {
-                                                CARD_INK
+                                                colors().text
                                             }))
                                             .child(account.name.clone()),
                                     )
@@ -237,11 +232,11 @@ impl MuseWindow {
                                                 .px(px(6.))
                                                 .rounded_md()
                                                 .border_1()
-                                                .border_color(rgb(0xE4E4E7))
-                                                .bg(rgb(FILL))
+                                                .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+                                                .bg(rgb(colors().fill))
                                                 .text_size(px(10.))
                                                 .font_weight(FontWeight::MEDIUM)
-                                                .text_color(rgb(SECONDARY))
+                                                .text_color(rgb(colors().secondary))
                                                 .child(plan),
                                         )
                                     })
@@ -250,7 +245,7 @@ impl MuseWindow {
                                             div()
                                                 .flex_none()
                                                 .text_size(px(10.))
-                                                .text_color(rgb(MUTED_TEXT))
+                                                .text_color(rgb(colors().muted))
                                                 .child("休眠"),
                                         )
                                     })
@@ -259,7 +254,7 @@ impl MuseWindow {
                                             div()
                                                 .flex_none()
                                                 .text_size(px(10.))
-                                                .text_color(rgb(MUTED_TEXT))
+                                                .text_color(rgb(colors().muted))
                                                 .child("缓存"),
                                         )
                                     }),
@@ -273,7 +268,7 @@ impl MuseWindow {
                                     .child(glyph(
                                         if proxied { "shield-check" } else { "world" },
                                         12.,
-                                        MUTED_TEXT,
+                                        colors().muted,
                                     ))
                                     .child(
                                         div()
@@ -281,7 +276,7 @@ impl MuseWindow {
                                             .overflow_hidden()
                                             .whitespace_nowrap()
                                             .text_size(px(12.))
-                                            .text_color(rgb(SECONDARY))
+                                            .text_color(rgb(colors().secondary))
                                             .child(network),
                                     ),
                             ),
@@ -323,7 +318,7 @@ impl MuseWindow {
                             .child(
                                 div()
                                     .text_size(px(12.))
-                                    .text_color(rgb(CARD_MUTED_INK))
+                                    .text_color(rgb(colors().secondary))
                                     .child("套餐额度 已用"),
                             )
                             .child(
@@ -333,9 +328,9 @@ impl MuseWindow {
                                     .text_color(rgb(if exhausted {
                                         0xD92D20
                                     } else if used.is_some() {
-                                        BLUE
+                                        colors().blue
                                     } else {
-                                        MUTED_TEXT
+                                        colors().muted
                                     }))
                                     .child(percent),
                             ),
@@ -346,7 +341,7 @@ impl MuseWindow {
                                 if exhausted || index < filled {
                                     segment_color
                                 } else {
-                                    TRACK
+                                    colors().track
                                 },
                             ))
                         }),
@@ -363,7 +358,7 @@ impl MuseWindow {
                         div()
                             .flex_none()
                             .text_size(px(11.))
-                            .text_color(rgb(MUTED_TEXT))
+                            .text_color(rgb(colors().muted))
                             .child(reset_label(reset)),
                     )
                     .child(
@@ -378,7 +373,7 @@ impl MuseWindow {
                                 div()
                                     .flex_none()
                                     .text_size(px(11.))
-                                    .text_color(rgb(MUTED_TEXT))
+                                    .text_color(rgb(colors().muted))
                                     .child("邀请额度"),
                             )
                             .child(
@@ -387,7 +382,7 @@ impl MuseWindow {
                                     .overflow_hidden()
                                     .text_size(px(11.))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(rgb(CARD_MUTED_INK))
+                                    .text_color(rgb(colors().secondary))
                                     .child(invite_value(&account.extra_quota)),
                             ),
                     ),
@@ -430,7 +425,7 @@ impl MuseWindow {
         let row = div()
             .pt(px(8.))
             .border_t_1()
-            .border_color(rgb(LINE))
+            .border_color(rgb(colors().line))
             .flex()
             .items_center()
             .gap_2();
@@ -440,7 +435,7 @@ impl MuseWindow {
                     div()
                         .flex_none()
                         .text_size(px(11.))
-                        .text_color(rgb(MUTED_TEXT))
+                        .text_color(rgb(colors().muted))
                         .child("邀请码"),
                 )
                 .child(
@@ -449,7 +444,7 @@ impl MuseWindow {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_size(px(11.))
-                        .text_color(rgb(MUTED_TEXT))
+                        .text_color(rgb(colors().muted))
                         .child("在 Muse 页面打开「邀请」后同步"),
                 );
         };
@@ -480,7 +475,7 @@ impl MuseWindow {
             div()
                 .flex_none()
                 .text_size(px(11.))
-                .text_color(rgb(MUTED_TEXT))
+                .text_color(rgb(colors().muted))
                 .child("邀请码"),
         )
         .child(
@@ -490,20 +485,20 @@ impl MuseWindow {
                 .h(px(22.))
                 .px(px(6.))
                 .rounded_md()
-                .bg(rgb(FILL))
+                .bg(rgb(colors().fill))
                 .flex()
                 .items_center()
                 .gap_1()
                 .cursor_pointer()
-                .hover(|style| style.bg(rgb(FILL_HOVER)))
+                .hover(|style| style.bg(rgb(colors().fill_hover)))
                 .child(
                     div()
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(CARD_INK))
+                        .text_color(rgb(colors().text))
                         .child(code.clone()),
                 )
-                .child(glyph("copy", 11., MUTED_TEXT))
+                .child(glyph("copy", 11., colors().muted))
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::chrome::AccountHint("复制邀请码".into()))
                         .into()
@@ -524,7 +519,7 @@ impl MuseWindow {
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_size(px(11.))
-                .text_color(rgb(CARD_MUTED_INK))
+                .text_color(rgb(colors().secondary))
                 .child(if counts.is_empty() {
                     "邀请数据待同步".to_owned()
                 } else {
@@ -549,8 +544,8 @@ impl MuseWindow {
                 .inset_0()
                 .rounded_xl()
                 .border_1()
-                .border_color(rgb(0xE4E4E7))
-                .bg(rgb(0xFFFFFF))
+                .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+                .bg(rgb(colors().panel))
                 .shadow_sm(),
             self.navigation_transition,
             self.motion_policy,
@@ -578,9 +573,9 @@ impl MuseWindow {
             .on_mouse_move(
                 cx.listener(|this, _: &gpui::MouseMoveEvent, _, _| this.prefetch_page_snapshot()),
             )
-            .bg(rgb(SIDE))
+            .bg(rgb(colors().surface))
             .border_r_1()
-            .border_color(rgb(LINE))
+            .border_color(rgb(colors().line))
             .child(div().pt_2().child(self.render_home_card(false, cx)))
             .child(
                 div()
@@ -595,13 +590,13 @@ impl MuseWindow {
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(rgb(MUTED_TEXT))
+                            .text_color(rgb(colors().muted))
                             .child("账号"),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(rgb(MUTED_TEXT))
+                            .text_color(rgb(colors().muted))
                             .child(self.workspace.accounts.len().to_string()),
                     )
                     .child(div().flex_1())
@@ -630,7 +625,7 @@ impl MuseWindow {
                     .flex_none()
                     .p_2()
                     .border_t_1()
-                    .border_color(rgb(LINE))
+                    .border_color(rgb(colors().line))
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -662,8 +657,8 @@ impl MuseWindow {
                 .inset_0()
                 .rounded_lg()
                 .border_1()
-                .border_color(rgb(0xE4E4E7))
-                .bg(rgb(0xFFFFFF))
+                .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+                .bg(rgb(colors().panel))
                 .shadow_sm(),
             self.navigation_transition,
             self.motion_policy,
@@ -687,11 +682,11 @@ impl MuseWindow {
             .on_mouse_move(
                 cx.listener(|this, _: &gpui::MouseMoveEvent, _, _| this.prefetch_page_snapshot()),
             )
-            .bg(rgb(SIDE))
+            .bg(rgb(colors().surface))
             .border_r_1()
-            .border_color(rgb(LINE))
+            .border_color(rgb(colors().line))
             .child(self.render_home_card(true, cx))
-            .child(div().w(px(28.)).h(px(1.)).bg(rgb(LINE)))
+            .child(div().w(px(28.)).h(px(1.)).bg(rgb(colors().line)))
             .child(
                 div()
                     .id("compact-scroll")
@@ -718,7 +713,9 @@ impl MuseWindow {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .when(!active, |element| element.hover(|s| s.bg(rgb(FILL_HOVER))))
+                            .when(!active, |element| {
+                                element.hover(|s| s.bg(rgb(colors().fill_hover)))
+                            })
                             .when(active, |element| {
                                 element.child(self.selection_layer(SharedString::from(format!(
                                     "compact-selection-{id}"
@@ -785,11 +782,21 @@ impl MuseWindow {
             .items_center()
             .gap_3()
             .cursor_pointer()
-            .when(!active, |element| element.hover(|s| s.bg(rgb(FILL_HOVER))))
+            .when(!active, |element| {
+                element.hover(|s| s.bg(rgb(colors().fill_hover)))
+            })
             .when(active, |element| {
                 element.child(self.selection_layer("home-selection".into()))
             })
-            .child(glyph("home", 17., if active { TEXT } else { SECONDARY }))
+            .child(glyph(
+                "home",
+                17.,
+                if active {
+                    colors().text
+                } else {
+                    colors().secondary
+                },
+            ))
             .on_click(cx.listener(|this, _, window, cx| this.show_workspace(window, cx)));
         if compact {
             card.size(px(48.)).justify_center()
@@ -807,14 +814,18 @@ impl MuseWindow {
                         } else {
                             FontWeight::MEDIUM
                         })
-                        .text_color(rgb(if active { TEXT } else { SECONDARY }))
+                        .text_color(rgb(if active {
+                            colors().text
+                        } else {
+                            colors().secondary
+                        }))
                         .child("工作室"),
                 )
                 .child(
                     div()
                         .flex_none()
                         .text_size(px(11.))
-                        .text_color(rgb(MUTED_TEXT))
+                        .text_color(rgb(colors().muted))
                         .child("图片 · 视频"),
                 )
         }
@@ -838,7 +849,7 @@ impl MuseWindow {
             .flex_none()
             .rounded_full()
             .border_2()
-            .border_color(rgb(0xFFFFFF))
+            .border_color(rgb(colors().panel))
             .bg(rgb(if sleeping {
                 0xA7C7B7
             } else if ready {
@@ -846,7 +857,7 @@ impl MuseWindow {
             } else if running {
                 0xEAB35A
             } else {
-                0xDBDCDF
+                tone(0xDBDCDF, 0x60606D)
             }))
             .tooltip(move |_, cx| cx.new(|_| super::chrome::AccountHint(label.into())).into())
     }
@@ -917,9 +928,27 @@ impl MuseWindow {
                 .gap_3()
                 .cursor_pointer()
                 .text_size(px(12.))
-                .text_color(rgb(if danger { 0xC54F4A } else { 0x3F3F46 }))
-                .hover(|s| s.bg(rgb(if danger { 0xFFF1F0 } else { 0xF4F5F5 })))
-                .child(glyph(icon, 15., if danger { 0xC54F4A } else { 0x7E7F86 }))
+                .text_color(rgb(if danger {
+                    tone(0xC54F4A, 0xFF9B94)
+                } else {
+                    tone(0x3F3F46, 0xD4D4DC)
+                }))
+                .hover(|s| {
+                    s.bg(rgb(if danger {
+                        tone(0xFFF1F0, 0x3D2225)
+                    } else {
+                        tone(0xF4F5F5, 0x2B2B31)
+                    }))
+                })
+                .child(glyph(
+                    icon,
+                    15.,
+                    if danger {
+                        tone(0xC54F4A, 0xFF9B94)
+                    } else {
+                        tone(0x7E7F86, 0xAAAAB5)
+                    },
+                ))
                 .child(label)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if !accepts_action(this) {
@@ -959,8 +988,8 @@ impl MuseWindow {
                     .p(px(6.))
                     .rounded(px(10.))
                     .border_1()
-                    .border_color(rgb(0xE5E6E8))
-                    .bg(rgb(0xFFFFFF))
+                    .border_color(rgb(tone(0xE5E6E8, 0x3F3F46)))
+                    .bg(rgb(colors().panel))
                     .shadow_lg()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
@@ -968,14 +997,20 @@ impl MuseWindow {
                             .px_2()
                             .py_1()
                             .text_size(px(10.))
-                            .text_color(rgb(0x9FA0A7))
+                            .text_color(rgb(tone(0x9FA0A7, 0x92929F)))
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .child(name),
                     )
                     .child(item("context-refresh", "reload", "刷新账号信息", false))
                     .child(item("context-edit", "pencil", "编辑账号", false))
-                    .child(div().mx_2().my_1().h(px(1.)).bg(rgb(0xEFF0F2)))
+                    .child(
+                        div()
+                            .mx_2()
+                            .my_1()
+                            .h(px(1.))
+                            .bg(rgb(tone(0xEFF0F2, 0x36363E))),
+                    )
                     .child(
                         div()
                             .id("context-cookies")
@@ -987,9 +1022,9 @@ impl MuseWindow {
                             .gap_3()
                             .cursor_pointer()
                             .text_size(px(12.))
-                            .text_color(rgb(0x3F3F46))
-                            .hover(|s| s.bg(rgb(0xF4F5F5)))
-                            .child(glyph("cookie", 15., 0x7E7F86))
+                            .text_color(rgb(tone(0x3F3F46, 0xD4D4DC)))
+                            .hover(|s| s.bg(rgb(tone(0xF4F5F5, 0x2B2B31))))
+                            .child(glyph("cookie", 15., tone(0x7E7F86, 0xAAAAB5)))
                             .child("提取 Cookie")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if accepts_action(this) {
@@ -1029,7 +1064,7 @@ impl MuseWindow {
                     .inset_0()
                     .rounded_full()
                     .overflow_hidden()
-                    .bg(rgb(0xF5F6F6))
+                    .bg(rgb(tone(0xF5F6F6, 0x2B2B31)))
                     .child(
                         img(image.clone())
                             .id(SharedString::from(format!(

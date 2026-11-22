@@ -5,7 +5,7 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, hsla,
+    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
     point, prelude::*, px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::*;
@@ -489,7 +489,7 @@ impl Element for TextElement {
                 input
                     .placeholder_color
                     .map(|color| rgb(color).into())
-                    .unwrap_or_else(|| hsla(0., 0., 0., 0.2)),
+                    .unwrap_or_else(|| rgb(crate::theme::colors().muted).into()),
             )
         } else {
             (content, style.color)
@@ -545,7 +545,7 @@ impl Element for TextElement {
                         point(bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    rgb(crate::theme::BLUE),
+                    rgb(crate::theme::colors().blue),
                 )),
             )
         } else {

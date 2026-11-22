@@ -1,5 +1,5 @@
 use super::chrome::glyph;
-use super::studio_ui::{ACCENT, INK, MUTED, SOFT, StudioPanel, mode_icon, ratio_label};
+use super::studio_ui::{StudioPanel, mode_icon, ratio_label};
 use super::*;
 use crate::studio::{self, Mode};
 
@@ -51,7 +51,7 @@ impl MuseWindow {
                     .p(px(2.))
                     .flex_none()
                     .rounded_lg()
-                    .bg(rgb(SOFT))
+                    .bg(rgb(colors().fill))
                     .flex()
                     .items_center()
                     .children([Mode::Image, Mode::Video].into_iter().map(|item| {
@@ -73,11 +73,11 @@ impl MuseWindow {
                     .h(px(16.))
                     .mx_1()
                     .flex_none()
-                    .bg(rgb(0xE4E4E7)),
+                    .bg(rgb(tone(0xE4E4E7, 0x3F3F46))),
             )
             .child(
                 composer_pill("studio-reference", false, compact)
-                    .child(glyph("image", 14., MUTED))
+                    .child(glyph("image", 14., colors().secondary))
                     .when(!compact, |element| {
                         element.child(if self.studio.reference.is_some() {
                             "更换参考图"
@@ -102,7 +102,7 @@ impl MuseWindow {
         if mode != Mode::Chat {
             let ratio = studio::ratio_value(mode, self.studio.ratio);
             let pill = composer_pill("studio-ratio", open == Some(StudioPanel::Ratio), compact)
-                .child(glyph(ratio_icon(ratio), 14., MUTED))
+                .child(glyph(ratio_icon(ratio), 14., colors().secondary))
                 .child(ratio_label(ratio).to_owned())
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.toggle_studio_panel(StudioPanel::Ratio, window, cx);
@@ -115,7 +115,7 @@ impl MuseWindow {
                 open == Some(StudioPanel::Duration),
                 compact,
             )
-            .child(glyph("duration", 14., MUTED))
+            .child(glyph("duration", 14., colors().secondary))
             .child(format!("{} 秒", studio::DURATIONS[self.studio.duration]))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.toggle_studio_panel(StudioPanel::Duration, window, cx);
@@ -131,7 +131,7 @@ impl MuseWindow {
             );
             pill = match selected.as_slice() {
                 [] => pill
-                    .child(glyph("at-sign", 14., MUTED))
+                    .child(glyph("at-sign", 14., colors().secondary))
                     .when(!compact, |element| element.child("选择账号")),
                 [account] => {
                     pill.child(self.account_avatar(account, 18., false))
@@ -152,7 +152,7 @@ impl MuseWindow {
                                 .when(index > 0, |element| element.ml(px(-6.)))
                                 .rounded_full()
                                 .border_2()
-                                .border_color(rgb(0xFFFFFF))
+                                .border_color(rgb(colors().panel))
                                 .child(self.account_avatar(account, 18., false))
                         }),
                     ))
@@ -160,7 +160,7 @@ impl MuseWindow {
                         element.child(format!("{} 个账号", many.len()))
                     }),
             };
-            pill.child(glyph("chevron-down", 11., MUTED))
+            pill.child(glyph("chevron-down", 11., colors().secondary))
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.toggle_studio_panel(StudioPanel::Picker, window, cx);
                 }))
@@ -180,16 +180,24 @@ impl MuseWindow {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(rgb(if ready { INK } else { SOFT }))
+                .bg(rgb(if ready {
+                    colors().primary
+                } else {
+                    colors().fill
+                }))
                 .child(glyph(
                     "arrow-up",
                     17.,
-                    if ready { 0xFFFFFF } else { 0x9C9DA4 },
+                    if ready {
+                        colors().on_primary
+                    } else {
+                        tone(0x9C9DA4, 0x92929F)
+                    },
                 ))
                 .when(ready, |element| {
                     element
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(0x4C4D54)))
+                        .hover(|style| style.bg(rgb(tone(0x4C4D54, 0xFFFFFF))))
                         .on_click(cx.listener(|this, _, window, cx| this.submit_studio(window, cx)))
                 }),
         );
@@ -209,7 +217,7 @@ impl MuseWindow {
                     .w_full()
                     .text_size(px(12.))
                     .line_height(px(18.))
-                    .text_color(rgb(0xA15C07))
+                    .text_color(rgb(tone(0xA15C07, 0xF3C06A)))
                     .child(self.studio.notice.clone()),
             );
         }
@@ -223,8 +231,8 @@ impl MuseWindow {
                 .flex_none()
                 .rounded(px(16.))
                 .border_1()
-                .border_color(rgb(0xE4E4E7))
-                .bg(rgb(0xFFFFFF))
+                .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+                .bg(rgb(colors().panel))
                 .shadow_md()
                 .pl_4()
                 .pr_3()
@@ -234,7 +242,9 @@ impl MuseWindow {
                 .flex()
                 .flex_col()
                 .drag_over::<ExternalPaths>(|style, _, _, _| {
-                    style.border_color(rgb(ACCENT)).bg(rgb(0xF7F9FE))
+                    style
+                        .border_color(rgb(colors().blue))
+                        .bg(rgb(tone(0xF7F9FE, 0x24334F)))
                 })
                 .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                     if let Some(path) = paths
@@ -272,7 +282,7 @@ impl MuseWindow {
                 .flex()
                 .justify_center()
                 .text_size(px(11.))
-                .text_color(rgb(0xA1A1AA))
+                .text_color(rgb(tone(0xA1A1AA, 0x92929F)))
                 .child("Enter 发送，Shift+Enter 换行。可以把图片拖到输入框作为参考图；同一账号的任务依次进行，不同账号可以同时生成。"),
         )
         .child(self.studio_layout_probe("composer"))
@@ -372,16 +382,16 @@ impl MuseWindow {
                         div()
                             .size(px(44.))
                             .rounded(px(10.))
-                            .bg(rgb(SOFT))
+                            .bg(rgb(colors().fill))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(glyph("image", 18., MUTED)),
+                            .child(glyph("image", 18., colors().secondary)),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(colors().secondary))
                             .child("正在处理参考图…"),
                     ),
             );
@@ -414,7 +424,7 @@ impl MuseWindow {
                         .rounded(px(10.))
                         .overflow_hidden()
                         .border_1()
-                        .border_color(rgb(0xE4E4E7))
+                        .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
                         .child(
                             img(reference.path.clone())
                                 .size_full()
@@ -432,7 +442,7 @@ impl MuseWindow {
                             div()
                                 .text_size(px(12.))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(INK))
+                                .text_color(rgb(colors().text))
                                 .child("参考图"),
                         )
                         .child(
@@ -440,7 +450,7 @@ impl MuseWindow {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_size(px(11.))
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(colors().secondary))
                                 .child(detail),
                         ),
                 )
@@ -454,12 +464,12 @@ impl MuseWindow {
                         .items_center()
                         .justify_center()
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(SOFT)))
+                        .hover(|style| style.bg(rgb(colors().fill)))
                         .tooltip(|_, cx| {
                             cx.new(|_| super::studio_ui::StudioHint("移除参考图".into()))
                                 .into()
                         })
-                        .child(glyph("x", 13., MUTED))
+                        .child(glyph("x", 13., colors().secondary))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.studio.reference = None;
                             cx.notify();
@@ -483,8 +493,8 @@ impl MuseWindow {
                 .p(px(4.))
                 .rounded(px(10.))
                 .border_1()
-                .border_color(rgb(0xE4E4E7))
-                .bg(rgb(0xFFFFFF))
+                .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+                .bg(rgb(colors().panel))
                 .shadow_lg()
                 .occlude()
                 .max_h(px(max_height))
@@ -505,7 +515,7 @@ impl MuseWindow {
                                 .px(px(10.))
                                 .py_2()
                                 .text_size(px(12.))
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(colors().secondary))
                                 .child("还没有账号，先在左侧新增一个"),
                         )
                     })
@@ -542,7 +552,7 @@ impl MuseWindow {
                             .when(running, |element| {
                                 element
                                     .cursor_pointer()
-                                    .hover(|style| style.bg(rgb(SOFT)))
+                                    .hover(|style| style.bg(rgb(colors().fill)))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if !this.studio_panel_accepts(transition) {
                                             return;
@@ -573,14 +583,14 @@ impl MuseWindow {
                                     } else {
                                         FontWeight::NORMAL
                                     })
-                                    .text_color(rgb(INK))
+                                    .text_color(rgb(colors().text))
                                     .child(account.name.clone()),
                             )
                             .child(
                                 div()
                                     .flex_none()
                                     .text_size(px(11.))
-                                    .text_color(rgb(MUTED))
+                                    .text_color(rgb(colors().secondary))
                                     .child(detail),
                             )
                             .child(check_slot(chosen))
@@ -599,7 +609,11 @@ impl MuseWindow {
                         .child(glyph(
                             ratio_icon(ratio),
                             14.,
-                            if selected { INK } else { MUTED },
+                            if selected {
+                                colors().text
+                            } else {
+                                colors().secondary
+                            },
                         ))
                         .child(div().flex_1().child(ratio_name(ratio)))
                         .child(check_slot(selected))
@@ -625,7 +639,15 @@ impl MuseWindow {
                             SharedString::from(format!("duration-option-{index}")),
                             selected,
                         )
-                        .child(glyph("duration", 14., if selected { INK } else { MUTED }))
+                        .child(glyph(
+                            "duration",
+                            14.,
+                            if selected {
+                                colors().text
+                            } else {
+                                colors().secondary
+                            },
+                        ))
                         .child(div().flex_1().child(format!("{duration} 秒")))
                         .child(check_slot(selected))
                         .on_click(cx.listener(
@@ -661,10 +683,18 @@ fn composer_pill(id: &'static str, open: bool, compact: bool) -> Stateful<Div> {
         .items_center()
         .gap(px(6.))
         .text_size(px(12.))
-        .text_color(rgb(if open { INK } else { MUTED }))
-        .bg(rgba(if open { 0xF2F2F4FF } else { 0x00000000 }))
+        .text_color(rgb(if open {
+            colors().text
+        } else {
+            colors().secondary
+        }))
+        .bg(rgba(if open {
+            (colors().fill << 8) | 0xFF
+        } else {
+            0x00000000
+        }))
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(SOFT)).text_color(rgb(INK)))
+        .hover(|style| style.bg(rgb(colors().fill)).text_color(rgb(colors().text)))
 }
 
 /// Pill with its menu opening just above it.
@@ -691,7 +721,7 @@ fn menu_heading(label: &'static str) -> Div {
         .pt(px(6.))
         .pb_1()
         .text_size(px(11.))
-        .text_color(rgb(0xA1A1AA))
+        .text_color(rgb(tone(0xA1A1AA, 0x92929F)))
         .child(label)
 }
 
@@ -706,19 +736,19 @@ fn menu_row(id: SharedString, selected: bool) -> Stateful<Div> {
         .items_center()
         .gap(px(10.))
         .text_size(px(13.))
-        .text_color(rgb(INK))
+        .text_color(rgb(colors().text))
         .font_weight(if selected {
             FontWeight::SEMIBOLD
         } else {
             FontWeight::NORMAL
         })
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(SOFT)))
+        .hover(|style| style.bg(rgb(colors().fill)))
 }
 
 fn check_slot(checked: bool) -> Div {
     div().size(px(14.)).flex_none().when(checked, |element| {
-        element.child(glyph("circle-check", 14., ACCENT))
+        element.child(glyph("circle-check", 14., colors().blue))
     })
 }
 
@@ -760,14 +790,26 @@ fn mode_segment(
         .items_center()
         .gap_1()
         .text_size(px(12.))
-        .text_color(rgb(if selected { INK } else { MUTED }))
-        .bg(rgba(if selected { 0xFFFFFFFF } else { 0x00000000 }))
+        .text_color(rgb(if selected {
+            colors().text
+        } else {
+            colors().secondary
+        }))
+        .bg(rgba(if selected {
+            (colors().panel << 8) | 0xFF
+        } else {
+            0x00000000
+        }))
         .when(selected, |element| element.shadow_sm())
         .cursor_pointer()
         .child(glyph(
             mode_icon(mode),
             13.,
-            if selected { INK } else { MUTED },
+            if selected {
+                colors().text
+            } else {
+                colors().secondary
+            },
         ))
         .when(!compact, |element| {
             element.child(match mode {
