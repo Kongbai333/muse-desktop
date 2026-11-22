@@ -13,16 +13,26 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc::Sender},
 };
+#[cfg(target_os = "windows")]
 use webview2_com::{
     BasicAuthenticationRequestedEventHandler,
     Microsoft::Web::WebView2::Win32::{ICoreWebView2_10, ICoreWebView2Environment7},
     NavigationCompletedEventHandler, take_pwstr,
 };
+#[cfg(target_os = "windows")]
 use windows::core::{HSTRING, Interface, PWSTR};
-use wry::{
-    NewWindowResponse, PageLoadEvent, Rect, WebContext, WebView, WebViewBuilder,
-    WebViewBuilderExtWindows, WebViewExtWindows,
-};
+#[cfg(target_os = "macos")]
+use wry::WebViewBuilderExtDarwin;
+use wry::{NewWindowResponse, PageLoadEvent, Rect, WebContext, WebView, WebViewBuilder};
+#[cfg(target_os = "windows")]
+use wry::{WebViewBuilderExtWindows, WebViewExtWindows};
+#[cfg(target_os = "macos")]
+#[path = "browser_macos.rs"]
+mod macos;
+#[cfg(target_os = "macos")]
+fn wake(_: &HostedTab) {}
+#[cfg(target_os = "macos")]
+fn set_memory_target(_: &HostedTab, _: bool) {}
 
 pub struct BrowserRequest<'a> {
     pub identity: BrowserIdentity,
@@ -72,6 +82,7 @@ pub struct HostedTab {
 }
 
 /// Resumes a suspended page before it is shown or asked to run script.
+#[cfg(target_os = "windows")]
 fn wake(tab: &HostedTab) {
     let requested = tab.sleep_requested.replace(false);
     let asleep = tab.sleeping.swap(false, Ordering::Relaxed);
@@ -85,6 +96,7 @@ fn wake(tab: &HostedTab) {
 
 /// Hidden pages ask WebView2 to keep as little memory as it can; the page
 /// keeps running, so quota and studio work are unaffected.
+#[cfg(target_os = "windows")]
 fn set_memory_target(tab: &HostedTab, low: bool) {
     if tab.low_memory.replace(Some(low)) == Some(low) {
         return;
@@ -103,6 +115,7 @@ fn set_memory_target(tab: &HostedTab, low: bool) {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn webview_theme(mode: muse_core::ThemeMode) -> wry::Theme {
     match mode {
         muse_core::ThemeMode::Light => wry::Theme::Light,
@@ -144,6 +157,7 @@ pub struct ObserverFlags {
     pub settings_loaded: bool,
 }
 
+#[cfg(target_os = "windows")]
 fn read_stream(stream: &windows::Win32::System::Com::IStream) -> Option<Vec<u8>> {
     use windows::Win32::System::Com::STREAM_SEEK_SET;
     unsafe { stream.Seek(0, STREAM_SEEK_SET, None) }.ok()?;
@@ -192,7 +206,11 @@ fn decode_preview(bytes: &[u8]) -> Option<Arc<gpui::RenderImage>> {
     )])))
 }
 
+#[cfg(target_os = "windows")]
 struct ClosingProcess(windows::Win32::Foundation::HANDLE);
+#[cfg(target_os = "macos")]
+struct ClosingProcess;
+#[cfg(target_os = "windows")]
 impl Drop for ClosingProcess {
     fn drop(&mut self) {
         unsafe {
@@ -231,8 +249,11 @@ const KEYBOARD_BRIDGE: &str = r#"
     let action = null;
     if (event.altKey && event.key === 'ArrowLeft') action = 'back';
     if (event.altKey && event.key === 'ArrowRight') action = 'forward';
-    if (event.ctrlKey && event.key.toLowerCase() === 'l') action = 'address';
-    if (event.ctrlKey && event.key.toLowerCase() === 'r') action = 'reload';
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') action = 'address';
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') action = 'reload';
+    if (event.metaKey && ['+', '='].includes(event.key)) action = 'zoom_in';
+    if (event.metaKey && event.key === '-') action = 'zoom_out';
+    if (event.metaKey && event.key === '0') action = 'zoom_reset';
     if (action) {
       event.preventDefault();
       window.ipc.postMessage(JSON.stringify({kind:'command', action}));
@@ -314,6 +335,7 @@ impl BrowserPool {
             proxy_credentials,
             diagnostic_origin,
         } = request;
+        #[cfg(target_os = "windows")]
         if let Some(processes) = self.closing.get(&identity.account_id) {
             use windows::Win32::{
                 Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject,
@@ -365,6 +387,9 @@ impl BrowserPool {
         };
         self.tabs.remove(&identity.tab_id);
         std::fs::create_dir_all(profile).map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
+        let store_namespace =
+            crate::session_guard::native_store_namespace(identity.account_id, profile)?;
         let mut context = WebContext::new(Some(profile.to_owned()));
         let navigation_tx = self.sender.clone();
         let title_tx = self.sender.clone();
@@ -376,7 +401,6 @@ impl BrowserPool {
         let diagnostic_origin = diagnostic_origin.map(str::to_owned);
         let mut builder = WebViewBuilder::new_with_web_context(&mut context)
             .with_url("about:blank")
-            .with_theme(webview_theme(self.display.get().theme))
             .with_background_color(page_background(self.display.get().theme))
             .with_bounds(bounds)
             .with_focused(false)
@@ -427,8 +451,10 @@ impl BrowserPool {
                 };
                 match message.get("kind").and_then(|v| v.as_str()) {
                     Some("command") => {
-                        if let Some(action @ ("back" | "forward" | "reload" | "address")) =
-                            message.get("action").and_then(|v| v.as_str())
+                        if let Some(
+                            action @ ("back" | "forward" | "reload" | "address" | "zoom_in"
+                            | "zoom_out" | "zoom_reset"),
+                        ) = message.get("action").and_then(|v| v.as_str())
                         {
                             let _ =
                                 ipc_tx.send(BrowserMessage::Command(identity, action.to_owned()));
@@ -453,6 +479,15 @@ impl BrowserPool {
                     _ => {}
                 }
             });
+        #[cfg(target_os = "windows")]
+        {
+            builder = builder.with_theme(webview_theme(self.display.get().theme));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            builder = builder.with_data_store_identifier(*store_namespace.as_bytes());
+        }
+        #[cfg(target_os = "windows")]
         if let Some(bridge) = &bridge {
             let bypass = if network.force_proxy() {
                 " --proxy-bypass-list=<-loopback>"
@@ -467,21 +502,36 @@ impl BrowserPool {
         let view = builder
             .build_as_child(window)
             .map_err(|error| format!("浏览器创建失败，请检查 WebView2 Runtime：{error}"))?;
+        #[cfg(target_os = "windows")]
         if let Some(bridge) = &bridge {
             install_local_auth(&view, bridge.shared_auth())?;
         }
-        let mut actual = PWSTR::null();
-        let environment: ICoreWebView2Environment7 = view
-            .environment()
-            .cast()
-            .map_err(|_| "浏览器版本不支持目录核验")?;
-        unsafe { environment.UserDataFolder(&mut actual) }
-            .map_err(|_| "无法核验浏览器实际数据目录")?;
-        let actual = take_pwstr(actual);
-        self.profiles
-            .verify(identity.account_id, profile, Path::new(&actual))?;
+        #[cfg(target_os = "windows")]
+        {
+            let mut actual = PWSTR::null();
+            let environment: ICoreWebView2Environment7 = view
+                .environment()
+                .cast()
+                .map_err(|_| "浏览器版本不支持目录核验")?;
+            unsafe { environment.UserDataFolder(&mut actual) }
+                .map_err(|_| "无法核验浏览器实际数据目录")?;
+            let actual = take_pwstr(actual);
+            self.profiles
+                .verify(identity.account_id, profile, Path::new(&actual))?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let actual = macos::data_store_id(&view)?;
+            self.profiles
+                .verify_namespace(identity.account_id, store_namespace, actual)?;
+            if let Some(bridge) = &bridge {
+                macos::install_proxy(&view, bridge)?;
+            }
+            macos::set_theme(&view, self.display.get().theme);
+        }
         view.zoom(self.display.get().page_zoom())
             .map_err(|error| format!("无法恢复页面缩放：{error}"))?;
+        #[cfg(target_os = "windows")]
         install_navigation_errors(&view, identity, self.sender.clone(), gate.clone())?;
         view.load_url(url).map_err(|_| "无法打开账号页面")?;
         self.tabs.insert(
@@ -513,9 +563,30 @@ impl BrowserPool {
     /// Page zoom of a tab as WebView2 reports it; 1.0 is 100%.
     pub fn zoom(&self, id: muse_core::TabId) -> Option<f64> {
         let tab = self.tabs.get(&id)?;
-        let mut factor = 0f64;
-        unsafe { tab.view.controller().ZoomFactor(&mut factor) }.ok()?;
-        (factor.is_finite() && factor > 0.).then_some(factor)
+        #[cfg(target_os = "windows")]
+        {
+            let mut factor = 0f64;
+            unsafe { tab.view.controller().ZoomFactor(&mut factor) }.ok()?;
+            (factor.is_finite() && factor > 0.).then_some(factor)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            macos::zoom(&tab.view)
+        }
+    }
+
+    pub fn visible(&self, id: muse_core::TabId) -> Option<bool> {
+        let tab = self.tabs.get(&id)?;
+        #[cfg(target_os = "windows")]
+        {
+            let mut visible = Default::default();
+            unsafe { tab.view.controller().IsVisible(&mut visible) }.ok()?;
+            Some(visible.as_bool())
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Some(macos::visible(&tab.view))
+        }
     }
 
     pub fn set_zoom(&self, id: muse_core::TabId, factor: f64) -> Result<(), String> {
@@ -544,9 +615,12 @@ impl BrowserPool {
         self.display.set(display);
         let mut error = None;
         for tab in self.tabs.values() {
+            #[cfg(target_os = "windows")]
             if let Err(reason) = tab.view.set_theme(webview_theme(mode)) {
                 error.get_or_insert_with(|| reason.to_string());
             }
+            #[cfg(target_os = "macos")]
+            macos::set_theme(&tab.view, mode);
             let _ = tab.view.set_background_color(page_background(mode));
         }
         error.map_or(Ok(()), Err)
@@ -606,6 +680,7 @@ impl BrowserPool {
             self.last_active.set(None);
         }
     }
+    #[cfg(target_os = "windows")]
     pub fn extract_cookies(&self, identity: BrowserIdentity, request: uuid::Uuid) -> bool {
         let Some(tab) = self.tabs.get(&identity.tab_id).filter(|t| {
             t.identity == identity
@@ -734,18 +809,16 @@ impl BrowserPool {
     }
     pub fn visible_views_ready(&self) -> bool {
         self.tabs.values().all(|tab| {
-            let mut visible = Default::default();
-            (unsafe { tab.view.controller().IsVisible(&mut visible).is_ok() })
-                && (!visible.as_bool() || tab.staged.get() || tab.gate.lock().unwrap().ready())
+            self.visible(tab.identity.tab_id).is_some_and(|visible| {
+                !visible || tab.staged.get() || tab.gate.lock().unwrap().ready()
+            })
         })
     }
     pub fn active_render_ready(&self, identity: BrowserIdentity) -> bool {
         self.tabs.get(&identity.tab_id).is_some_and(|tab| {
-            let mut visible = Default::default();
             self.page_ready(identity)
                 && !tab.staged.get()
-                && (unsafe { tab.view.controller().IsVisible(&mut visible).is_ok() })
-                && visible.as_bool()
+                && self.visible(identity.tab_id) == Some(true)
         })
     }
 
@@ -899,6 +972,7 @@ impl BrowserPool {
 
     /// Captures the visible page as a PNG. The decoded frame arrives as
     /// `BrowserMessage::Preview` with the same `request` number.
+    #[cfg(target_os = "windows")]
     pub fn capture_preview(&self, identity: BrowserIdentity, request: u64) -> bool {
         use webview2_com::{
             CapturePreviewCompletedHandler,
@@ -956,21 +1030,27 @@ impl BrowserPool {
     }
 
     pub fn invalidate_account(&mut self, id: muse_core::AccountId) {
-        use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
-        let mut processes = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for tab in self
-            .tabs
-            .values()
-            .filter(|tab| tab.identity.account_id == id)
+        #[cfg(target_os = "windows")]
         {
-            let mut pid = 0;
-            if unsafe { tab.view.webview().BrowserProcessId(&mut pid) }.is_ok()
-                && pid != 0
-                && seen.insert(pid)
-                && let Ok(handle) = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }
+            use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+            let mut processes = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for tab in self
+                .tabs
+                .values()
+                .filter(|tab| tab.identity.account_id == id)
             {
-                processes.push(ClosingProcess(handle));
+                let mut pid = 0;
+                if unsafe { tab.view.webview().BrowserProcessId(&mut pid) }.is_ok()
+                    && pid != 0
+                    && seen.insert(pid)
+                    && let Ok(handle) = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }
+                {
+                    processes.push(ClosingProcess(handle));
+                }
+            }
+            if !processes.is_empty() {
+                self.closing.insert(id, processes);
             }
         }
         self.tabs.retain(|_, tab| tab.identity.account_id != id);
@@ -983,9 +1063,6 @@ impl BrowserPool {
             .retain(|identity| identity.account_id != id);
         self.background.retain(|identity| identity.account_id != id);
         self.last_active.set(None);
-        if !processes.is_empty() {
-            self.closing.insert(id, processes);
-        }
     }
 
     pub fn sync_visibility(&self, active: Option<BrowserIdentity>, bounds: Rect) {
@@ -1038,6 +1115,7 @@ impl BrowserPool {
     /// Suspends pages that have been hidden and idle for `after_ms`. A suspended
     /// page keeps its login and content but releases most CPU and memory; it is
     /// resumed automatically when shown, refreshed or used by the studio.
+    #[cfg(target_os = "windows")]
     pub fn sleep_idle(&self, after_ms: u64) -> bool {
         use webview2_com::{
             Microsoft::Web::WebView2::Win32::ICoreWebView2_3, TrySuspendCompletedHandler,
@@ -1116,6 +1194,7 @@ impl BrowserPool {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn install_local_auth(view: &WebView, auth: Arc<LocalAuth>) -> Result<(), String> {
     let native: ICoreWebView2_10 = view
         .webview()
@@ -1144,6 +1223,7 @@ fn install_local_auth(view: &WebView, auth: Arc<LocalAuth>) -> Result<(), String
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn install_navigation_errors(
     view: &WebView,
     identity: BrowserIdentity,

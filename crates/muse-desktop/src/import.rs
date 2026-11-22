@@ -148,20 +148,28 @@ pub fn default_paths() -> Result<(PathBuf, PathBuf), String> {
 }
 
 fn require_unlocked(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
     use std::os::windows::fs::OpenOptionsExt;
-    let _file = fs::OpenOptions::new()
-        .read(true)
-        .share_mode(0)
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "windows")]
+    options.share_mode(0);
+    let _file = options
         .open(path)
         .map_err(|_| "旧版浏览器数据正在使用，请先关闭旧版程序后再导入")?;
     Ok(())
 }
 
 fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
     use std::os::windows::fs::MetadataExt;
     let metadata = fs::symlink_metadata(source).map_err(|_| "无法读取旧版浏览器数据")?;
+    #[cfg(target_os = "windows")]
     if metadata.file_attributes() & 0x400 != 0 {
         return Err("浏览器目录包含链接或重解析点，导入已停止".into());
+    }
+    if metadata.file_type().is_symlink() {
+        return Err("浏览器目录包含符号链接，导入已停止".into());
     }
     if metadata.is_dir() {
         fs::create_dir(target).map_err(|_| "无法创建浏览器数据副本")?;

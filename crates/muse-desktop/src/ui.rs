@@ -40,23 +40,23 @@ actions!(
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("alt-left", Back, Some("Muse")),
-        KeyBinding::new("alt-right", Forward, Some("Muse")),
-        KeyBinding::new("ctrl-r", Reload, Some("Muse")),
-        KeyBinding::new("ctrl-l", FocusAddress, Some("Muse")),
-        KeyBinding::new("ctrl-t", NewTab, Some("Muse")),
-        KeyBinding::new("ctrl-w", CloseTab, Some("Muse")),
-        KeyBinding::new("enter", SubmitAddress, Some("TextInput")),
-        KeyBinding::new("escape", DismissStudioPanels, Some("Muse")),
-        KeyBinding::new("escape", CancelAccountDialog, Some("AccountDialog")),
-        KeyBinding::new("escape", CancelAccountDialog, Some("CookieDialog")),
-        KeyBinding::new("escape", CancelAccountDialog, Some("AccountContext")),
-        KeyBinding::new("ctrl-enter", SaveAccountDialog, Some("AccountDialog")),
-        KeyBinding::new("ctrl-=", ZoomIn, Some("Muse")),
-        KeyBinding::new("ctrl-+", ZoomIn, Some("Muse")),
-        KeyBinding::new("ctrl--", ZoomOut, Some("Muse")),
-        KeyBinding::new("ctrl-0", ZoomReset, Some("Muse")),
-        KeyBinding::new("ctrl-c", CopyStudioImage, Some("Muse")),
+        crate::platform::key_binding("alt-left", Back, Some("Muse")),
+        crate::platform::key_binding("alt-right", Forward, Some("Muse")),
+        crate::platform::key_binding("ctrl-r", Reload, Some("Muse")),
+        crate::platform::key_binding("ctrl-l", FocusAddress, Some("Muse")),
+        crate::platform::key_binding("ctrl-t", NewTab, Some("Muse")),
+        crate::platform::key_binding("ctrl-w", CloseTab, Some("Muse")),
+        crate::platform::key_binding("enter", SubmitAddress, Some("TextInput")),
+        crate::platform::key_binding("escape", DismissStudioPanels, Some("Muse")),
+        crate::platform::key_binding("escape", CancelAccountDialog, Some("AccountDialog")),
+        crate::platform::key_binding("escape", CancelAccountDialog, Some("CookieDialog")),
+        crate::platform::key_binding("escape", CancelAccountDialog, Some("AccountContext")),
+        crate::platform::key_binding("ctrl-enter", SaveAccountDialog, Some("AccountDialog")),
+        crate::platform::key_binding("ctrl-=", ZoomIn, Some("Muse")),
+        crate::platform::key_binding("ctrl-+", ZoomIn, Some("Muse")),
+        crate::platform::key_binding("ctrl--", ZoomOut, Some("Muse")),
+        crate::platform::key_binding("ctrl-0", ZoomReset, Some("Muse")),
+        crate::platform::key_binding("ctrl-c", CopyStudioImage, Some("Muse")),
     ]);
 }
 
@@ -1607,8 +1607,9 @@ impl MuseWindow {
                     position.y + size.height / 2.,
                     0x23B88B,
                 )
-                .unwrap_or(false);
-                if !pixels_visible
+                .ok();
+                if cfg!(target_os = "windows")
+                    && pixels_visible != Some(true)
                     && smoke.paint_started.unwrap().elapsed() < Duration::from_secs(3)
                 {
                     self.smoke = Some(smoke);
@@ -1673,14 +1674,7 @@ impl MuseWindow {
                 let hides_on_workspace = self
                     .workspace
                     .active_browser_identity()
-                    .and_then(|identity| self.browsers.view(identity.tab_id))
-                    .is_some_and(|view| {
-                        use wry::WebViewExtWindows;
-                        let mut visible = Default::default();
-                        unsafe {
-                            view.controller().IsVisible(&mut visible).is_ok() && !visible.as_bool()
-                        }
-                    });
+                    .is_some_and(|identity| self.browsers.visible(identity.tab_id) == Some(false));
                 self.show_start_page = false;
                 self.ensure_active(window);
                 let proxy_requests = crate::proxy_smoke::authenticated_requests();
@@ -1695,7 +1689,8 @@ impl MuseWindow {
                         .workspace
                         .active_browser_identity()
                         .is_some_and(|id| self.browsers.active_render_ready(id));
-                let mut report = serde_json::json!({"passed":preserved && unknown && shared && follows_panels && hides_on_workspace && proxy_ok && pixels_visible && profile_verified && readiness_verified,"actual_profile_bindings_verified":profile_verified,"visible_views_passed_readiness":readiness_verified,"webview_pixels_visible":pixels_visible,"navigation_back":true,"navigation_forward":true,"independent_account_storage":true,"same_account_tabs_share_storage":shared,"opener_page_preserved":preserved,"quota_unknown_without_provider":unknown,"webview_follows_sidebar_and_inspector":follows_panels,"webview_hides_on_native_workspace":hides_on_workspace,"native_authenticated_upstream_requests":proxy_requests,"accounts":self.workspace.accounts.len()});
+                let render_check_passed = cfg!(target_os = "macos") || pixels_visible == Some(true);
+                let mut report = serde_json::json!({"passed":preserved && unknown && shared && follows_panels && hides_on_workspace && proxy_ok && render_check_passed && profile_verified && readiness_verified,"actual_profile_bindings_verified":profile_verified,"visible_views_passed_readiness":readiness_verified,"webview_pixels_visible":pixels_visible,"navigation_back":true,"navigation_forward":true,"independent_account_storage":true,"same_account_tabs_share_storage":shared,"opener_page_preserved":preserved,"quota_unknown_without_provider":unknown,"webview_follows_sidebar_and_inspector":follows_panels,"webview_hides_on_native_workspace":hides_on_workspace,"native_authenticated_upstream_requests":proxy_requests,"accounts":self.workspace.accounts.len()});
                 if std::env::args().any(|arg| arg == "--account-dialog-smoke-test") {
                     let passed = self.exercise_account_dialogs(window, cx);
                     report["account_dialog_cancel_save_create_remove"] = serde_json::json!(passed);
@@ -1829,14 +1824,9 @@ impl MuseWindow {
                 return;
             }
             11 if self.account_dialog.is_none() => {
-                let visible = self.visible_browser_identity().is_some_and(|identity| {
-                    self.browsers.view(identity.tab_id).is_some_and(|view| {
-                        use wry::WebViewExtWindows;
-                        let mut visible = Default::default();
-                        (unsafe { view.controller().IsVisible(&mut visible).is_ok() })
-                            && visible.as_bool()
-                    })
-                });
+                let visible = self
+                    .visible_browser_identity()
+                    .is_some_and(|identity| self.browsers.visible(identity.tab_id) == Some(true));
                 let mut report = smoke.edit_report.take().unwrap_or_default();
                 report["account_dialog_restored_browser"] = serde_json::json!(visible);
                 report["passed"] = serde_json::json!(report["passed"] == true && visible);

@@ -169,6 +169,7 @@ impl MotionPolicy {
         }
     }
 
+    #[cfg(target_os = "windows")]
     pub fn system() -> Self {
         use windows::Win32::UI::WindowsAndMessaging::{
             SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
@@ -185,6 +186,11 @@ impl MotionPolicy {
             )
         };
         Self::from_setting(result.is_ok().then(|| enabled.as_bool()))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn system() -> Self {
+        Self::from_setting(Some(!crate::windows_host::reduce_motion()))
     }
 
     pub fn duration(self, kind: MotionKind) -> Option<Duration> {

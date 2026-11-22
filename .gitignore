@@ -15,4 +15,5 @@
 *.pfx
 *.bak
 *.log
+__pycache__/
 

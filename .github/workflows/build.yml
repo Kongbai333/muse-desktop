@@ -1,4 +1,4 @@
-name: Windows client
+name: Desktop clients
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-${{ github.workflow }}-${{ github.ref }}
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
@@ -56,7 +56,9 @@ jobs:
           node scripts/check-reference-upload.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check portable packaging
-        run: ./scripts/check-package.ps1
+        run: |
+          ./scripts/check-package.ps1
+          python -m unittest discover -s tests -p test_macos_package.py
       - name: Rust tests
         run: cargo test --workspace --locked
       - name: Build Windows x64 client
@@ -72,16 +74,76 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  macos:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      CARGO_BUILD_JOBS: '3'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-${{ matrix.arch }}-rust-1.95.0-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: macos-${{ matrix.arch }}-rust-1.95.0-
+      - name: Check formatting and package contracts
+        run: |
+          cargo fmt --all -- --check
+          python3 -m unittest discover -s tests -p test_macos_package.py
+      - name: Browser adapter contracts
+        run: |
+          node --test scripts/check-observer.cjs
+          node scripts/check-studio.cjs
+          node scripts/check-original-media.cjs
+          node scripts/check-reference-upload.cjs
+      - name: Rust tests
+        run: cargo test --workspace --locked
+      - name: Build the native macOS client
+        run: cargo build --release --locked -p muse-desktop
+      - name: Check WKWebView startup, navigation and account isolation
+        run: python3 scripts/check-macos-smoke.py
+      - name: Package and ad-hoc sign Muse.app
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python3 scripts/package-macos.py --arch '${{ matrix.arch }}' --tag "$RELEASE_TAG"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: muse-desktop-macos-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: muse-desktop-windows-x64
+          pattern: muse-desktop-*
+          merge-multiple: true
           path: dist
       - name: Publish the versioned download
         env:

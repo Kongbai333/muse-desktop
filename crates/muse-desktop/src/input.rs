@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
+    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
     point, prelude::*, px, relative, rgb, rgba, size,
@@ -711,17 +711,17 @@ impl TextInput {
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, Some("TextInput")),
-        KeyBinding::new("delete", Delete, Some("TextInput")),
-        KeyBinding::new("left", Left, Some("TextInput")),
-        KeyBinding::new("right", Right, Some("TextInput")),
-        KeyBinding::new("shift-left", SelectLeft, Some("TextInput")),
-        KeyBinding::new("shift-right", SelectRight, Some("TextInput")),
-        KeyBinding::new("ctrl-a", SelectAll, Some("TextInput")),
-        KeyBinding::new("ctrl-v", Paste, Some("TextInput")),
-        KeyBinding::new("ctrl-c", Copy, Some("TextInput")),
-        KeyBinding::new("ctrl-x", Cut, Some("TextInput")),
-        KeyBinding::new("home", Home, Some("TextInput")),
-        KeyBinding::new("end", End, Some("TextInput")),
+        crate::platform::key_binding("backspace", Backspace, Some("TextInput")),
+        crate::platform::key_binding("delete", Delete, Some("TextInput")),
+        crate::platform::key_binding("left", Left, Some("TextInput")),
+        crate::platform::key_binding("right", Right, Some("TextInput")),
+        crate::platform::key_binding("shift-left", SelectLeft, Some("TextInput")),
+        crate::platform::key_binding("shift-right", SelectRight, Some("TextInput")),
+        crate::platform::key_binding("ctrl-a", SelectAll, Some("TextInput")),
+        crate::platform::key_binding("ctrl-v", Paste, Some("TextInput")),
+        crate::platform::key_binding("ctrl-c", Copy, Some("TextInput")),
+        crate::platform::key_binding("ctrl-x", Cut, Some("TextInput")),
+        crate::platform::key_binding("home", Home, Some("TextInput")),
+        crate::platform::key_binding("end", End, Some("TextInput")),
     ]);
 }

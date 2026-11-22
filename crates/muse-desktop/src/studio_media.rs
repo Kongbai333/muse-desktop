@@ -374,9 +374,7 @@ impl MuseWindow {
             for _ in 0..60 {
                 let attempt = this.update_in(cx, |this, window, cx| {
                     let message = match payload.take() {
-                        Some(Ok((dib, png))) => match crate::windows_host::hwnd(window)
-                            .and_then(|hwnd| write_image_clipboard(hwnd, &dib, &png))
-                        {
+                        Some(Ok((dib, png))) => match write_image_clipboard(window, &dib, &png) {
                             Ok(()) => "图片已复制，可以直接粘贴".to_owned(),
                             Err(error) => error,
                         },
@@ -616,10 +614,6 @@ fn default_save_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
 
 /// "Muse-<start of prompt>-1122-1030.png", safe as a Windows file name.
 fn suggested_file_name(entry: &studio::Entry, extension: &str) -> String {
-    use windows::Win32::{
-        Foundation::{FILETIME, SYSTEMTIME},
-        System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime},
-    };
     let topic = entry
         .prompt
         .chars()
@@ -629,28 +623,16 @@ fn suggested_file_name(entry: &studio::Entry, extension: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let mut stamp = String::new();
-    if let Some(ticks) = entry
-        .created_at
-        .checked_add(11_644_473_600_000)
-        .and_then(|value| value.checked_mul(10_000))
-        .filter(|_| entry.created_at > 0)
-    {
-        let file = FILETIME {
-            dwLowDateTime: ticks as u32,
-            dwHighDateTime: (ticks >> 32) as u32,
-        };
-        let mut utc = SYSTEMTIME::default();
-        let mut local = SYSTEMTIME::default();
-        if unsafe { FileTimeToSystemTime(&file, &mut utc) }.is_ok()
-            && unsafe { SystemTimeToTzSpecificLocalTime(None, &utc, &mut local) }.is_ok()
-        {
-            stamp = format!(
+    let stamp = (entry.created_at > 0)
+        .then(|| crate::platform::local_time(entry.created_at))
+        .flatten()
+        .map(|time| {
+            format!(
                 "{:02}{:02}-{:02}{:02}{:02}",
-                local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond
-            );
-        }
-    }
+                time.month, time.day, time.hour, time.minute, time.second
+            )
+        })
+        .unwrap_or_default();
     let mut name = String::from("Muse");
     for part in [topic.trim(), stamp.as_str()] {
         if !part.is_empty() {
@@ -708,11 +690,8 @@ fn clipboard_payload(path: &std::path::Path) -> Result<(Vec<u8>, Vec<u8>), Strin
     Ok((dib, png))
 }
 
-fn write_image_clipboard(
-    owner: windows::Win32::Foundation::HWND,
-    dib: &[u8],
-    png: &[u8],
-) -> Result<(), String> {
+#[cfg(target_os = "windows")]
+fn write_image_clipboard(window: &Window, dib: &[u8], png: &[u8]) -> Result<(), String> {
     use windows::Win32::{
         Foundation::{GlobalFree, HANDLE},
         System::{
@@ -723,6 +702,7 @@ fn write_image_clipboard(
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
         },
     };
+    let owner = crate::windows_host::hwnd(window)?;
     const CF_DIB: u32 = 8;
     fn place(format: u32, bytes: &[u8]) -> bool {
         unsafe {
@@ -768,4 +748,9 @@ fn write_image_clipboard(
     } else {
         Err("复制失败，请重试".into())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn write_image_clipboard(_window: &Window, _dib: &[u8], png: &[u8]) -> Result<(), String> {
+    crate::windows_host::write_image_clipboard(png)
 }

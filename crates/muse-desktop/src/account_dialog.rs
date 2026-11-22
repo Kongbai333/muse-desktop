@@ -173,11 +173,7 @@ impl MuseWindow {
         let before = self.workspace.to_json().unwrap_or_default();
         let count = self.workspace.accounts.len();
         self.open_account_dialog(None, false, window, cx);
-        let hidden = self.browsers.view(identity.tab_id).is_some_and(|view| {
-            use wry::WebViewExtWindows;
-            let mut visible = Default::default();
-            (unsafe { view.controller().IsVisible(&mut visible).is_ok() }) && !visible.as_bool()
-        });
+        let hidden = self.browsers.visible(identity.tab_id) == Some(false);
         self.new_tab(&NewTab, window, cx);
         let background_blocked = self.workspace.to_json().unwrap_or_default() == before;
         self.close_account_dialog(window, cx);

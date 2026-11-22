@@ -3,29 +3,9 @@ use super::*;
 use gpui::MouseDownEvent;
 
 fn reset_label(at: Option<u64>) -> String {
-    use windows::Win32::{
-        Foundation::{FILETIME, SYSTEMTIME},
-        System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime},
-    };
-    let Some(ticks) = at
-        .and_then(|ms| ms.checked_add(11_644_473_600_000))
-        .and_then(|ms| ms.checked_mul(10_000))
-    else {
-        return "重置时间待同步".into();
-    };
-    let file = FILETIME {
-        dwLowDateTime: ticks as u32,
-        dwHighDateTime: (ticks >> 32) as u32,
-    };
-    let mut utc = SYSTEMTIME::default();
-    let mut local = SYSTEMTIME::default();
-    if unsafe { FileTimeToSystemTime(&file, &mut utc) }.is_ok()
-        && unsafe { SystemTimeToTzSpecificLocalTime(None, &utc, &mut local) }.is_ok()
-    {
-        format!("{}月{}日重置", local.wMonth, local.wDay)
-    } else {
-        "重置时间待同步".into()
-    }
+    at.and_then(crate::platform::local_time)
+        .map(|time| format!("{}月{}日重置", time.month, time.day))
+        .unwrap_or_else(|| "重置时间待同步".into())
 }
 fn used_percent(quota: &muse_core::QuotaState) -> Option<f64> {
     quota.remaining_ratio().map(|r| (1. - r) * 100.)

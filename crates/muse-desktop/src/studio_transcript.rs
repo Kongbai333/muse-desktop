@@ -659,6 +659,7 @@ fn icon_action(
 }
 
 /// Opens Explorer with the generated file selected.
+#[cfg(target_os = "windows")]
 #[allow(dead_code)]
 pub(super) fn reveal_in_folder(path: &std::path::Path) {
     use std::os::windows::process::CommandExt;
@@ -669,33 +670,16 @@ pub(super) fn reveal_in_folder(path: &std::path::Path) {
 
 /// "11/22 10:30" in local time.
 fn record_time(at: u64) -> String {
-    use windows::Win32::{
-        Foundation::{FILETIME, SYSTEMTIME},
-        System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime},
-    };
-    let Some(ticks) = at
-        .checked_add(11_644_473_600_000)
-        .and_then(|value| value.checked_mul(10_000))
-        .filter(|_| at > 0)
-    else {
-        return String::new();
-    };
-    let file = FILETIME {
-        dwLowDateTime: ticks as u32,
-        dwHighDateTime: (ticks >> 32) as u32,
-    };
-    let mut utc = SYSTEMTIME::default();
-    let mut local = SYSTEMTIME::default();
-    if unsafe { FileTimeToSystemTime(&file, &mut utc) }.is_ok()
-        && unsafe { SystemTimeToTzSpecificLocalTime(None, &utc, &mut local) }.is_ok()
-    {
-        format!(
-            "{}/{} {:02}:{:02}",
-            local.wMonth, local.wDay, local.wHour, local.wMinute
-        )
-    } else {
-        String::new()
-    }
+    (at > 0)
+        .then(|| crate::platform::local_time(at))
+        .flatten()
+        .map(|time| {
+            format!(
+                "{}/{} {:02}:{:02}",
+                time.month, time.day, time.hour, time.minute
+            )
+        })
+        .unwrap_or_default()
 }
 fn menu_item(
     id: SharedString,
@@ -719,4 +703,13 @@ fn menu_item(
         .child(glyph(icon, 14., colors().secondary))
         .child(label)
         .on_click(on_click)
+}
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+pub(super) fn reveal_in_folder(path: &std::path::Path) {
+    let _ = std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn();
 }

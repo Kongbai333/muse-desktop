@@ -11,9 +11,14 @@ mod input;
 mod input_mask;
 mod motion;
 mod page_observer;
+mod platform;
 mod proxy_pool;
 mod proxy_settings;
 mod proxy_smoke;
+#[cfg(target_os = "windows")]
+mod secrets;
+#[cfg(target_os = "macos")]
+#[path = "secrets_macos.rs"]
 mod secrets;
 mod session_guard;
 mod session_probe;
@@ -25,7 +30,15 @@ mod studio_reference;
 mod theme;
 mod ui;
 mod window_state;
+#[cfg(target_os = "windows")]
 mod windows_caption;
+#[cfg(target_os = "macos")]
+#[path = "caption_macos.rs"]
+mod windows_caption;
+#[cfg(target_os = "windows")]
+mod windows_host;
+#[cfg(target_os = "macos")]
+#[path = "host_macos.rs"]
 mod windows_host;
 
 use gpui::{
@@ -43,10 +56,7 @@ fn main() {
         .windows(2)
         .find(|pair| pair[0] == "--data-dir")
         .map(|pair| PathBuf::from(&pair[1]))
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_else(|| ".".into()))
-                .join("MuseDesktopNext")
-        });
+        .unwrap_or_else(platform::data_dir);
     // The app has no console window, so a panic would otherwise close it silently.
     // Keep the last panic (message, source location and backtrace) next to the data.
     {

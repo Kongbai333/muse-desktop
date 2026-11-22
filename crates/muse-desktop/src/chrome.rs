@@ -331,6 +331,11 @@ impl MuseWindow {
                     .flex_1()
                     .min_w(px(24.))
                     .h_full()
+                    .when(cfg!(target_os = "macos"), |element| {
+                        element.on_mouse_down(MouseButton::Left, |_, window, _| {
+                            window.start_window_move()
+                        })
+                    })
                     .child(
                         canvas(
                             |bounds, _, _| {

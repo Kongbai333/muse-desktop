@@ -262,11 +262,15 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let fixture = root.join("target/cookie-import-synthetic.json");
         std::fs::write(&fixture, data.to_string()).unwrap();
-        let output = std::process::Command::new("node.exe")
-            .arg(root.join("scripts/check-cookie-import.cjs"))
-            .arg(&fixture)
-            .output()
-            .unwrap();
+        let output = std::process::Command::new(if cfg!(target_os = "windows") {
+            "node.exe"
+        } else {
+            "node"
+        })
+        .arg(root.join("scripts/check-cookie-import.cjs"))
+        .arg(&fixture)
+        .output()
+        .unwrap();
         assert!(
             output.status.success(),
             "Reference import failed: {}",
