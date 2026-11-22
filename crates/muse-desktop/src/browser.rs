@@ -31,6 +31,8 @@ use wry::{WebViewBuilderExtWindows, WebViewExtWindows};
 #[cfg(target_os = "macos")]
 #[path = "browser_macos.rs"]
 mod macos;
+#[path = "browser_transfer.rs"]
+mod transfer;
 #[cfg(target_os = "macos")]
 fn wake(_: &HostedTab) {}
 #[cfg(target_os = "macos")]
@@ -1255,20 +1257,30 @@ impl BrowserPool {
 
     pub fn retain_registered(&mut self, workspace: &muse_core::Workspace) {
         self.tabs.retain(|_, tab| {
-            workspace.account(tab.identity.account_id).is_some()
-                && (self.cookie_only.contains(&tab.identity)
-                    || workspace.contains_identity(tab.identity))
+            // Unpublished migration candidates intentionally have no workspace entry yet.
+            self.cookie_only.contains(&tab.identity) || workspace.contains_identity(tab.identity)
         });
+        self.cookie_only.retain(|identity| {
+            self.tabs
+                .get(&identity.tab_id)
+                .is_some_and(|tab| tab.identity == *identity)
+        });
+        let candidate_accounts: HashSet<_> = self
+            .cookie_only
+            .iter()
+            .map(|identity| identity.account_id)
+            .collect();
         self.bridges
-            .retain(|id, _| workspace.account(*id).is_some());
-        self.failures
-            .retain(|identity, _| workspace.contains_identity(*identity));
-        self.observations
-            .retain(|identity, _| workspace.contains_identity(*identity));
-        self.cookie_only
-            .retain(|identity| workspace.account(identity.account_id).is_some());
-        self.background
-            .retain(|identity| workspace.account(identity.account_id).is_some());
+            .retain(|id, _| workspace.account(*id).is_some() || candidate_accounts.contains(id));
+        self.failures.retain(|identity, _| {
+            workspace.contains_identity(*identity) || self.cookie_only.contains(identity)
+        });
+        self.observations.retain(|identity, _| {
+            workspace.contains_identity(*identity) || self.cookie_only.contains(identity)
+        });
+        self.background.retain(|identity| {
+            workspace.account(identity.account_id).is_some() || self.cookie_only.contains(identity)
+        });
         self.closing
             .retain(|id, _| workspace.account(*id).is_some());
     }

@@ -147,6 +147,20 @@ fn random_exports_are_different_and_write_only_ciphertext_atomically() {
 }
 
 #[test]
+fn cancelled_ciphertext_write_leaves_no_output_or_temporary_file() {
+    let bytes = fixture("ascii.muse-account");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/transfer-codec-tests")
+        .join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(matches!(
+        write_file_if(&root.join("cancelled.muse-account"), &bytes, || false),
+        Err(TransferError::Cancelled)
+    ));
+    assert_eq!(std::fs::read_dir(root).unwrap().count(), 0);
+}
+
+#[test]
 fn rejects_unknown_duplicate_missing_fields_and_excessive_json_depth() {
     let source = String::from_utf8(fixture("payload.json")).unwrap();
     for text in [

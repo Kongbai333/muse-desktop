@@ -52,6 +52,7 @@ pub struct ImportPlan {
     pub proxies: Vec<ProxyProfile>,
     pub cookies: HashMap<AccountId, wire::CookieSet>,
     pub warnings: Vec<String>,
+    pub proxy_previews: Vec<String>,
     upstream: Vec<(Uuid, Uuid, Zeroizing<String>)>,
     staged: HashSet<AccountId>,
     confirmed: bool,
@@ -69,6 +70,7 @@ impl ImportPlan {
             proxies: Vec::new(),
             cookies: HashMap::new(),
             warnings: vec!["所有账号均新建隔离环境；Cookie 写入后仍需网页确认真实身份。".into()],
+            proxy_previews: Vec::new(),
             upstream: Vec::new(),
             staged: HashSet::new(),
             confirmed: false,
@@ -76,6 +78,23 @@ impl ImportPlan {
         };
         let mut references = HashMap::new();
         for proxy in &payload.proxies {
+            let display_host = if proxy.host.contains(':') {
+                format!("[{}]", proxy.host)
+            } else {
+                proxy.host.clone()
+            };
+            plan.proxy_previews.push(format!(
+                "{} · {}://{}:{} · {}",
+                proxy.name,
+                proxy.protocol,
+                display_host,
+                proxy.port,
+                if proxy.auth.is_some() {
+                    "包含认证（隐藏）"
+                } else {
+                    "无认证"
+                }
+            ));
             let id = Uuid::new_v4();
             let revision = Uuid::new_v4();
             let draft = wire_proxy_draft(proxy)?;
@@ -141,7 +160,7 @@ impl ImportPlan {
                         || c.session.is_none()
                 })
             {
-                plan.warnings.push(format!("「{}」含未知 Cookie 属性：缺少域/路径时映射为来源 HTTPS 主机与根路径；未知安全标记按目标浏览器规则，未知有效期不延长；host-only 保真度未知。", local.name));
+                plan.warnings.push(format!("「{}」含未知 Cookie 属性：缺少域/路径时映射为来源 HTTPS 主机与根路径；未知 Secure 设为开启，未知 HttpOnly 仅对登录 Cookie 开启，未知 SameSite 使用浏览器默认；缺少有效期时按会话处理，不延长已知有效期；host-only 保真度未知。", local.name));
             }
             plan.cookies.insert(id, account.cookies);
         }

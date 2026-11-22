@@ -50,6 +50,8 @@ pub fn bind_keys(cx: &mut App) {
         crate::platform::key_binding("escape", DismissStudioPanels, Some("Muse")),
         crate::platform::key_binding("escape", CancelAccountDialog, Some("AccountDialog")),
         crate::platform::key_binding("escape", CancelAccountDialog, Some("CookieDialog")),
+        crate::platform::key_binding("escape", CancelAccountDialog, Some("TransferDialog")),
+        crate::platform::key_binding("ctrl-enter", SaveAccountDialog, Some("TransferDialog")),
         crate::platform::key_binding("escape", CancelAccountDialog, Some("AccountContext")),
         crate::platform::key_binding("ctrl-enter", SaveAccountDialog, Some("AccountDialog")),
         crate::platform::key_binding("ctrl-=", ZoomIn, Some("Muse")),
@@ -142,6 +144,7 @@ pub struct MuseWindow {
     refresh_accounts: HashMap<AccountId, (muse_core::BrowserIdentity, Instant)>,
     studio: crate::studio::Studio,
     cookie_dialog: Option<crate::cookie_export::CookieDialog>,
+    transfer_dialog: Option<transfer_ui::TransferDialog>,
     cookie_logins: HashMap<AccountId, (muse_core::BrowserIdentity, Instant)>,
     account_context: Option<(AccountId, gpui::Point<Pixels>, TransitionState)>,
 }
@@ -207,10 +210,11 @@ impl MuseWindow {
                 .sync_visibility(this.visible_browser_identity(), this.browser_bounds(window));
             this.capture_window(window);
         });
-        cx.on_app_quit(|this, _| {
+        cx.on_app_quit(|this, cx| {
             this.capture_page_zoom();
             this.persist_display();
             this.clear_cookie_dialog();
+            this.clear_transfer(cx);
             this.persist();
             this.persist_window();
             this.studio.save(&this.data_dir);
@@ -365,6 +369,7 @@ impl MuseWindow {
             refresh_accounts: HashMap::new(),
             studio,
             cookie_dialog: None,
+            transfer_dialog: None,
             cookie_logins: HashMap::new(),
             account_context: None,
         }
@@ -395,7 +400,8 @@ impl MuseWindow {
 
     /// The proxy pool is a side sheet: the page stays visible beside it.
     pub(super) fn proxy_drawer_visible(&self) -> bool {
-        self.cookie_dialog.is_none()
+        self.transfer_dialog.is_none()
+            && self.cookie_dialog.is_none()
             && self.account_context.is_none()
             && self
                 .account_dialog
@@ -495,12 +501,15 @@ impl MuseWindow {
 
     fn has_browser_overlay(&self) -> bool {
         self.account_dialog.is_some()
+            || self.transfer_dialog.is_some()
             || self.cookie_dialog.is_some()
             || self.account_context.is_some()
     }
 
     fn dismiss_browser_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.account_dialog.is_some() {
+        if self.transfer_dialog.is_some() {
+            self.close_transfer(window, cx);
+        } else if self.account_dialog.is_some() {
             self.close_account_dialog(window, cx);
         } else if self.cookie_dialog.is_some() {
             self.close_cookie_dialog(window, cx);
@@ -578,6 +587,9 @@ impl MuseWindow {
     }
 
     fn persist(&mut self) {
+        if self.transfer_commit_pending() {
+            return;
+        }
         if self.save_enabled
             && let Err(error) = self.workspace.save(&self.data_dir.join("workspace.json"))
         {
@@ -704,6 +716,11 @@ impl MuseWindow {
     }
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let committing = self.transfer_commit_pending();
+        self.poll_transfer(window, cx);
+        if committing || self.transfer_commit_pending() {
+            return;
+        }
         let mut changed = self.poll_proxy_editor(cx);
         changed |= self.poll_account_dialog(cx);
         let zoom_changed = self.browsers.zoom_changed(
@@ -1083,6 +1100,7 @@ impl MuseWindow {
             .map(|(identity, _)| *identity)
             .chain(self.invite_jobs.values().map(|(identity, _)| *identity))
             .chain(self.studio.jobs.values().filter_map(|job| job.identity))
+            .chain(self.cookie_logins.values().map(|(identity, _)| *identity))
             .filter(|identity| !self.browsers.is_cookie_reader(*identity))
             .collect::<Vec<_>>();
         self.browsers.set_background(backgrounds.iter().copied());
@@ -1358,6 +1376,10 @@ impl MuseWindow {
     }
 
     fn submit_address(&mut self, _: &SubmitAddress, window: &mut Window, cx: &mut Context<Self>) {
+        if self.transfer_dialog.is_some() {
+            self.submit_transfer(window, cx);
+            return;
+        }
         if self.show_start_page && self.studio.input.read(cx).is_focused(window) {
             self.submit_studio(window, cx);
             return;
@@ -1499,6 +1521,12 @@ impl MuseWindow {
         let Some(mut smoke) = self.smoke.take() else {
             return;
         };
+        #[cfg(debug_assertions)]
+        if std::env::args().any(|arg| arg == "--encrypted-transfer-smoke-test") {
+            self.advance_transfer_smoke(&mut smoke, window, cx);
+            self.smoke = Some(smoke);
+            return;
+        }
         if std::env::args().any(|a| a == "--profile-binding-smoke-test") {
             let identity = self.workspace.active_browser_identity().unwrap();
             let rejected = self
@@ -1927,3 +1955,8 @@ mod studio_media;
 mod studio_transcript;
 #[path = "studio_ui.rs"]
 mod studio_ui;
+#[path = "transfer_smoke.rs"]
+#[cfg(debug_assertions)]
+mod transfer_smoke;
+#[path = "transfer_ui.rs"]
+mod transfer_ui;

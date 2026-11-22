@@ -275,23 +275,35 @@ pub fn read_file(path: &Path) -> Result<Vec<u8>, TransferError> {
     Ok(bytes)
 }
 pub fn write_file(path: &Path, ciphertext: &[u8]) -> Result<(), TransferError> {
+    write_file_if(path, ciphertext, || true)
+}
+pub fn write_file_if(
+    path: &Path,
+    ciphertext: &[u8],
+    commit: impl FnOnce() -> bool,
+) -> Result<(), TransferError> {
     open_envelope(ciphertext)?;
     let parent = path.parent().ok_or(TransferError::File)?;
     let temporary = parent.join(format!(".muse-transfer-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| -> std::io::Result<()> {
+    let result = (|| -> Result<(), TransferError> {
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
-            .open(&temporary)?;
-        file.write_all(ciphertext)?;
-        file.sync_all()?;
+            .open(&temporary)
+            .map_err(|_| TransferError::File)?;
+        file.write_all(ciphertext)
+            .map_err(|_| TransferError::File)?;
+        file.sync_all().map_err(|_| TransferError::File)?;
         drop(file);
-        std::fs::rename(&temporary, path)
+        if !commit() {
+            return Err(TransferError::Cancelled);
+        }
+        std::fs::rename(&temporary, path).map_err(|_| TransferError::File)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
-    result.map_err(|_| TransferError::File)
+    result
 }
 pub fn decode_payload(bytes: &[u8]) -> Result<Payload, TransferError> {
     if !(1..=MAX_PLAINTEXT).contains(&bytes.len()) {

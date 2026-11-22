@@ -43,6 +43,7 @@ pub struct TextInput {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     secure: bool,
+    exact_paste: bool,
     revision: u64,
 }
 
@@ -135,7 +136,12 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace("\n", " "), window, cx);
+            self.replace_text_in_range(
+                None,
+                &crate::input_mask::paste_text(&text, self.exact_paste),
+                window,
+                cx,
+            );
         }
     }
 
@@ -670,6 +676,7 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             secure: false,
+            exact_paste: false,
             revision: 0,
         }
     }
@@ -679,6 +686,9 @@ impl TextInput {
     pub fn set_secure(&mut self, secure: bool, cx: &mut Context<Self>) {
         self.secure = secure;
         cx.notify();
+    }
+    pub fn set_exact_paste(&mut self, exact: bool) {
+        self.exact_paste = exact;
     }
     pub fn set_placeholder(&mut self, value: &str) {
         self.placeholder = value.to_owned().into();

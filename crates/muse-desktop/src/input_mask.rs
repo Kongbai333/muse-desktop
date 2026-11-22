@@ -40,3 +40,11 @@ mod tests {
         assert_eq!(display_index(text, 4, false), 4);
     }
 }
+/// Ordinary inputs remain single-line; migration passwords opt into exact clipboard bytes.
+pub fn paste_text(text: &str, exact: bool) -> String {
+    if exact {
+        text.to_owned()
+    } else {
+        text.replace('\n', " ")
+    }
+}

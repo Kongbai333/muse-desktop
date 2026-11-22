@@ -1013,6 +1013,42 @@ impl MuseWindow {
                                 }
                             })),
                     )
+                    .child(
+                        div()
+                            .id("context-export-accounts")
+                            .h(px(32.))
+                            .px_2()
+                            .rounded_lg()
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .text_size(px(12.))
+                            .child("导出账号与静态代理")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if accepts_action(this) {
+                                    this.dismiss_account_context(window, cx);
+                                    this.open_transfer(true, id, window, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("context-import-accounts")
+                            .h(px(32.))
+                            .px_2()
+                            .rounded_lg()
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .text_size(px(12.))
+                            .child("导入加密账号包")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if accepts_action(this) {
+                                    this.dismiss_account_context(window, cx);
+                                    this.open_transfer(false, id, window, cx);
+                                }
+                            })),
+                    )
                     .child(item("context-remove", "trash", "移除账号", true)),
                 transition,
                 self.motion_policy,

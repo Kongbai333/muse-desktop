@@ -1393,7 +1393,9 @@ impl Render for MuseWindow {
             self.status.clone()
         };
         div()
-            .key_context(if self.account_dialog.is_some() {
+            .key_context(if self.transfer_dialog.is_some() {
+                "TransferDialog"
+            } else if self.account_dialog.is_some() {
                 "Muse AccountDialog"
             } else if self.cookie_dialog.is_some() {
                 "Muse CookieDialog"
@@ -1438,7 +1440,11 @@ impl Render for MuseWindow {
                 this.dismiss_browser_overlay(window, cx);
             }))
             .on_action(cx.listener(|this, _: &SaveAccountDialog, window, cx| {
-                this.save_account_dialog(window, cx)
+                if this.transfer_dialog.is_some() {
+                    this.submit_transfer(window, cx);
+                } else {
+                    this.save_account_dialog(window, cx);
+                }
             }))
             .on_mouse_move(cx.listener(Self::drag_sidebar))
             .on_mouse_up(
@@ -1554,6 +1560,9 @@ impl Render for MuseWindow {
             })
             .when(self.cookie_dialog.is_some(), |element| {
                 element.child(self.render_cookie_dialog(window, cx))
+            })
+            .when(self.transfer_dialog.is_some(), |element| {
+                element.child(self.render_transfer(window, cx))
             })
             .child(self.studio_layout_probe("root"))
     }

@@ -6,6 +6,10 @@ pub(in crate::ui) fn begin(
     window: &mut Window,
     cx: &mut Context<MuseWindow>,
 ) -> Result<muse_core::BrowserIdentity, String> {
+    #[cfg(debug_assertions)]
+    if std::env::args().any(|arg| arg == "--transfer-smoke-test") {
+        super::super::transfer_smoke::check(this, window)?;
+    }
     let original = this
         .workspace
         .active_browser_identity()
