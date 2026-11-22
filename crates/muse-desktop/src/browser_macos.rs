@@ -35,8 +35,6 @@ unsafe extern "C" {
         password: *const std::ffi::c_char,
     );
     fn nw_proxy_config_set_failover_allowed(config: *mut AnyObject, allowed: bool);
-    fn nw_proxy_config_clear_match_domains(config: *mut AnyObject);
-    fn nw_proxy_config_clear_excluded_domains(config: *mut AnyObject);
 }
 
 pub(super) fn install_proxy(view: &WebView, bridge: &ProxyBridge) -> Result<(), String> {
@@ -62,8 +60,6 @@ pub(super) fn install_proxy(view: &WebView, bridge: &ProxyBridge) -> Result<(), 
             password.as_ptr(),
         );
         nw_proxy_config_set_failover_allowed(Retained::as_ptr(&proxy).cast_mut(), false);
-        nw_proxy_config_clear_match_domains(Retained::as_ptr(&proxy).cast_mut());
-        nw_proxy_config_clear_excluded_domains(Retained::as_ptr(&proxy).cast_mut());
         let proxies: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: &*proxy];
         let configuration: Retained<AnyObject> = msg_send![&*view.webview(), configuration];
         let store: Retained<AnyObject> = msg_send![&*configuration, websiteDataStore];

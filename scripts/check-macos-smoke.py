@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Exercise the native application on a macOS runner with disposable accounts."""
+import argparse
 import json
+import os
 import pathlib
+import socket
 import subprocess
 import sys
 import tempfile
@@ -10,8 +13,18 @@ import tempfile
 def main():
     if sys.platform != "darwin":
         raise SystemExit("This native smoke check requires macOS")
-    binary = pathlib.Path("target/release/muse-desktop").resolve()
-    for flag in ("--smoke-test", "--proxy-smoke-test", "--proxy-edit-smoke-test"):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--binary", type=pathlib.Path, default=pathlib.Path("target/release/muse-desktop"))
+    binary = parser.parse_args().binary.resolve()
+    flags = ["--smoke-test"]
+    host = os.environ.get("MUSE_SMOKE_PROXY_HOST")
+    if host:
+        if host != "muse-proxy-smoke.test" or socket.gethostbyname(host) != "127.0.0.1":
+            raise SystemExit("The CI-only proxy fixture hostname must resolve to loopback")
+        flags += ["--proxy-smoke-test", "--proxy-edit-smoke-test"]
+    else:
+        print("Proxy integration checks require the CI-only hostname fixture; running direct checks only.", flush=True)
+    for flag in flags:
         check_run(binary, flag)
 
 

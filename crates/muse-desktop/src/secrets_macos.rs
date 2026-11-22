@@ -65,6 +65,12 @@ impl ProtectedStore {
         }
         let service = self.service()?;
         let key = Self::key(id, revision);
+        let previous = crate::secret_policy::previous_secret(
+            get_generic_password(&service, &key).map_err(|error| error.code()),
+        )?;
+        if revision.is_some() && previous.is_some() {
+            return Err("代理凭据版本已存在".into());
+        }
         let temporary = parent.join(format!(".keychain-{}.tmp", uuid::Uuid::new_v4()));
         let marker = format!("MuseDesktop.Keychain.v1\n{key}\n");
         let stage = (|| -> std::io::Result<()> {
@@ -79,9 +85,6 @@ impl ProtectedStore {
             let _ = std::fs::remove_file(&temporary);
             return Err("无法保存凭据引用".into());
         }
-        let previous = get_generic_password(&service, &key)
-            .ok()
-            .map(Zeroizing::new);
         if set_generic_password(&service, &key, value.as_bytes()).is_err() {
             let _ = std::fs::remove_file(&temporary);
             return Err("macOS 钥匙串无法保存代理凭据".into());
@@ -102,8 +105,7 @@ impl ProtectedStore {
         id: AccountId,
         revision: Option<uuid::Uuid>,
     ) -> Result<Zeroizing<String>, String> {
-        let marker = std::fs::read_to_string(self.path(id, revision))
-            .map_err(|_| "此账号的代理凭据引用不存在；未使用直连")?;
+        let marker = crate::secret_policy::read_reference(&self.path(id, revision))?;
         let key = Self::key(id, revision);
         if marker != format!("MuseDesktop.Keychain.v1\n{key}\n") {
             return Err("代理凭据引用与此账号不一致".into());

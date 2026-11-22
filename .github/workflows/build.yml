@@ -121,12 +121,17 @@ jobs:
         run: cargo test --release --workspace --locked
       - name: Build the native macOS client
         run: cargo build --release --locked -p muse-desktop
-      - name: Check WKWebView startup, navigation and account isolation
-        run: python3 scripts/check-macos-smoke.py
       - name: Package and ad-hoc sign Muse.app
         env:
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: python3 scripts/package-macos.py --arch '${{ matrix.arch }}' --tag "$RELEASE_TAG"
+      - name: Check packaged WKWebView startup, navigation and proxy routing
+        run: |
+          printf '127.0.0.1 muse-proxy-smoke.test\n' | sudo tee -a /etc/hosts > /dev/null
+          muse_bundle_dir="$RUNNER_TEMP/muse-native-bundle"
+          mkdir -p "$muse_bundle_dir"
+          ditto -x -k dist/*-macos-${{ matrix.arch }}.app.zip "$muse_bundle_dir"
+          MUSE_SMOKE_PROXY_HOST=muse-proxy-smoke.test python3 scripts/check-macos-smoke.py --binary "$muse_bundle_dir/Muse.app/Contents/MacOS/Muse"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: muse-desktop-macos-${{ matrix.arch }}

@@ -15,6 +15,8 @@ mod platform;
 mod proxy_pool;
 mod proxy_settings;
 mod proxy_smoke;
+#[cfg(any(target_os = "macos", test))]
+mod secret_policy;
 #[cfg(target_os = "windows")]
 mod secrets;
 #[cfg(target_os = "macos")]
@@ -168,6 +170,19 @@ fn main() {
     } else {
         None
     };
+    // CI maps this reserved test hostname to the local read-only fixture. A
+    // numeric loopback URL can be implicitly exempted from macOS proxy rules.
+    let diagnostic_home = diagnostic_home.map(|home| {
+        if smoke && std::env::var("MUSE_SMOKE_PROXY_HOST").as_deref() == Ok("muse-proxy-smoke.test")
+        {
+            let mut url = url::Url::parse(&home).expect("Valid diagnostic fixture URL");
+            url.set_host(Some("muse-proxy-smoke.test"))
+                .expect("Valid fixed fixture hostname");
+            url.to_string()
+        } else {
+            home
+        }
+    });
     if proxy_smoke
         && let Err(error) = proxy_smoke::prepare(
             &data_dir,

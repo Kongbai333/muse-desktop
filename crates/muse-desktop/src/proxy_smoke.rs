@@ -46,6 +46,7 @@ pub fn diagnostics() -> serde_json::Value {
 pub fn prepare(root: &Path, fixture_url: &str, pooled: bool) -> Result<(), String> {
     let target = url::Url::parse(fixture_url).map_err(|_| "invalid smoke fixture")?;
     let target_port = target.port().ok_or("missing fixture port")?;
+    let target_host = target.host_str().ok_or("missing fixture host")?.to_owned();
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|_| "cannot bind fake upstream")?;
     let address = listener.local_addr().map_err(|_| "fake upstream address")?;
     let user = uuid::Uuid::new_v4().simple().to_string();
@@ -66,8 +67,9 @@ pub fn prepare(root: &Path, fixture_url: &str, pooled: bool) -> Result<(), Strin
         for stream in listener.incoming().flatten() {
             let expected = expected.clone();
             let requests = requests.clone();
+            let target_host = target_host.clone();
             std::thread::spawn(move || {
-                let _ = forward(stream, &expected, target_port, &requests);
+                let _ = forward(stream, &expected, &target_host, target_port, &requests);
             });
         }
     });
@@ -93,6 +95,7 @@ pub fn prepare(root: &Path, fixture_url: &str, pooled: bool) -> Result<(), Strin
 fn forward(
     mut browser: TcpStream,
     expected: &RwLock<String>,
+    target_host: &str,
     target_port: u16,
     requests: &AtomicUsize,
 ) -> std::io::Result<()> {
@@ -131,7 +134,7 @@ fn forward(
     }
     // Network.framework can tunnel even a plain HTTP origin through CONNECT.
     // The fixture permits only its exact loopback target, never arbitrary hosts.
-    if method == "CONNECT" && uri == format!("127.0.0.1:{target_port}") {
+    if method == "CONNECT" && uri == format!("{target_host}:{target_port}") {
         let mut target = TcpStream::connect(("127.0.0.1", target_port))?;
         requests.fetch_add(1, Ordering::Relaxed);
         browser.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
@@ -154,7 +157,7 @@ fn forward(
             return Ok(());
         }
     };
-    if method != "GET" || url.host_str() != Some("127.0.0.1") || url.port() != Some(target_port) {
+    if method != "GET" || url.host_str() != Some(target_host) || url.port() != Some(target_port) {
         INVALID.fetch_add(1, Ordering::Relaxed);
         browser.write_all(
             b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -165,7 +168,7 @@ fn forward(
     requests.fetch_add(1, Ordering::Relaxed);
     write!(
         target,
-        "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{target_port}\r\nConnection: close\r\n\r\n",
+        "GET {} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\nConnection: close\r\n\r\n",
         url.path()
     )?;
     std::io::copy(&mut target, &mut browser)?;
