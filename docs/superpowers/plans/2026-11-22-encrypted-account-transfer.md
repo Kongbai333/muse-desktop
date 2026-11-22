@@ -14,7 +14,7 @@
 
 - Wire 以 Android owner 的 `docs/protocols/account-transfer-v1.md` 为唯一 authority；互解前不宣称冻结。
 - 保留旧 header 入口；不导出 bridge/vault blob/profile/revision，不读取真实数据。
-- 所有代理按静态配置；用户名密码 opaque；指定代理失败不得 Direct。
+- 所有代理统一按静态配置；认证字段作为不透明文本原样迁移；指定代理失败不得 Direct。
 - 本地分支从 1dd9c72 增量，无远端操作，无版本/签名变动。
 - KDF/文件后台执行，敏感数据无日志、无明文临时文件。
 
@@ -34,33 +34,33 @@
 
 **Interfaces:** Produces `Payload`, `Account`, `Network`, `Proxy`, `CookieSet`, `Cookie`, `TransferError`; `decrypt(&[u8], &str) -> Result<Payload, TransferError>`, `encrypt(&Payload, &str) -> Result<Vec<u8>, TransferError>`, `validate(&Payload, i64)`, bounded `read_file` / atomic ciphertext `write_file`.
 
-- [ ] Write tests consuming fixed ASCII/Unicode and Java random files; assert exact payload and deterministic test-only reproduction. Add format, password/auth, duplicates/depth, tamper, randomness and schema failures.
-- [ ] Run `cargo test -p muse-desktop account_transfer`; verify RED because implementation missing.
-- [ ] Implement with ring PBKDF2/AES-GCM and system random; strict canonical envelope, no arbitrary KDF costs; typed deny-unknown payload and duplicate/depth validation. No production deterministic randomness API.
-- [ ] Run same tests GREEN; generate new Rust Unicode random fixture, send hash/path to owner for Java consumption, agree freeze before product integration.
-- [ ] Local commit protocol/code/fixtures; only explicit docs paths force-added.
+- [x] Write tests consuming fixed ASCII/Unicode and Java random files; assert exact payload and deterministic test-only reproduction. Add format, password/auth, duplicates/depth, tamper, randomness and schema failures.
+- [x] Run `cargo test -p muse-desktop account_transfer`; verify RED because implementation missing.
+- [x] Implement with ring PBKDF2/AES-GCM and system random; strict canonical envelope, no arbitrary KDF costs; typed deny-unknown payload and duplicate/depth validation. No production deterministic randomness API.
+- [x] Run same tests GREEN; generate new Rust Unicode random fixture, send hash/path to owner for Java consumption, agree freeze before product integration.
+- [x] Local commit protocol/code/fixtures; only explicit docs paths force-added.
 
 ### Task 2: 候选图、vault 和提交原子性
 
 **Files:** Create `transfer_plan.rs`; Modify `muse-core/src/lib.rs` only for migration provenance.
 
-**Interfaces:** Consumes Task 1 Payload; produces `ImportPlan::prepare`, new IDs/bindings, preview lines, `stage_vault`, `rollback`, `merge_into(&Workspace) -> Workspace`; snapshot export resolves actual upstream credentials from ProtectedStore.
+**Interfaces:** Consumes Task 1 Payload; produces `ImportPlan::prepare`, new IDs/bindings, preview lines, `stage_vault`、RAII 清理、 `merge_into(&Workspace) -> Workspace`; snapshot export resolves actual upstream credentials from ProtectedStore.
 
-- [ ] Write failing tests for shared refs/new IDs/same-endpoint distinct refs, strict/platform conversion, legacy routes, failure cleanup and merge preserving latest unrelated changes.
-- [ ] Run targeted tests RED; implement candidate graph and provenance without publishing accounts or per-proxy metadata saves.
-- [ ] Run targeted tests GREEN, including synthetic DPAPI vault and failed workspace save; verify existing metadata unchanged.
-- [ ] Local commit candidate implementation.
+- [x] Write failing tests for shared refs/new IDs/same-endpoint distinct refs, strict/platform conversion, legacy routes, failure cleanup and merge preserving latest unrelated changes.
+- [x] Run targeted tests RED; implement candidate graph and provenance without publishing accounts or per-proxy metadata saves.
+- [x] Run targeted tests GREEN, including synthetic DPAPI vault and failed workspace save; verify existing metadata unchanged.
+- [x] Local commit candidate implementation.
 
 ### Task 3: Native Cookie snapshot 与多账号 staging
 
-**Files:** Modify `browser.rs`, `browser_macos.rs`, `cookie_export.rs`; extend synthetic smoke as needed.
+**Files:** Modify `browser.rs`; Create `browser_transfer.rs`, `browser_transfer_macos.rs`, `transfer_cookies.rs`; extend synthetic smoke as needed.
 
 **Interfaces:** Consumes plan account identities and protocol CookieSet; native snapshot reports URL-scoped coverage, unknown host-only honestly. Staging uses original stage_cookie_import and explicit capability checks before commit; no Muse navigation during export/stage.
 
-- [ ] Add failing tests for attribute conversion/expiry/scope duplicates/unsupported metadata and URL-scoped export fidelity; native smoke starts with disposable fixture profiles only.
-- [ ] Run RED; implement native snapshots and conversion, readback/flush supported paths, precise rejection if unsupported. Retain old header output.
-- [ ] Run GREEN and native local direct/proxy smoke; do not call fixture identity a real login.
-- [ ] Local commit native integration.
+- [x] Add failing tests for attribute conversion/expiry/scope duplicates/unsupported metadata and URL-scoped export fidelity; native smoke starts with disposable fixture profiles only.
+- [x] Run RED; implement native snapshots and conversion, readback/flush supported paths, precise rejection if unsupported. Retain old header output.
+- [x] Run GREEN and native local direct/proxy smoke; do not call fixture identity a real login.
+- [x] Local commit native integration.
 
 ### Task 4: 异步导入导出 UI
 
@@ -68,10 +68,10 @@
 
 **Interfaces:** Consumes encrypt/decrypt, ImportPlan and native snapshots; produces select/password/file/preview/confirm/cancel flow with request generation and final activation barrier.
 
-- [ ] Add failing tests for exact password paste, invalid confirmation, cancellation/stale job behavior and menu/UI contract.
-- [ ] Run RED; implement export selection/password confirmation and file picker; import bounded background decode plus preview; confirm route/attribute mappings; stage/commit/activate candidate only once.
-- [ ] Run GREEN including failure/late-result/UI responsiveness assertions. Clear inputs and zero sensitive owned buffers when dialog exits.
-- [ ] Local commit UI feature.
+- [x] Add failing tests for exact password paste, invalid confirmation, cancellation/stale job behavior and menu/UI contract.
+- [x] Run RED; implement export selection/password confirmation and file picker; import bounded background decode plus preview; confirm route/attribute mappings; stage/commit/activate candidate only once.
+- [x] Run GREEN including failure/late-result/UI responsiveness assertions. Clear inputs and zero sensitive owned buffers when dialog exits.
+- [x] Local commit UI feature.
 
 ### Task 5: 完整验证与本地交付
 
@@ -79,7 +79,7 @@
 
 **Interfaces:** Consumes all earlier tasks; produces tested local commits and interoperability report.
 
-- [ ] Run `cargo fmt --all -- --check`, `cargo test --workspace`, existing Node/Python packaging/contracts, native Windows transfer smoke.
-- [ ] Confirm Java→Rust and Rust→Java random-file hashes, all negative cases and exact-source evidence.
-- [ ] Review full diff for secret/logging, stale callbacks, activation order, scope and wire consistency; fix material issues with RED/GREEN.
-- [ ] Record actual Windows/Mac coverage, user acceptance boundary and local commit IDs. No remote action.
+- [x] Run `cargo fmt --all -- --check`, `cargo test --workspace`, existing Node/Python packaging/contracts, native Windows transfer smoke.
+- [x] Confirm Java→Rust and Rust→Java random-file hashes, all negative cases and exact-source evidence.
+- [x] Review full diff for secret/logging, stale callbacks, activation order, scope and wire consistency; fix material issues with RED/GREEN.
+- [x] Record actual Windows/Mac coverage, user acceptance boundary and local commit IDs. No remote action.

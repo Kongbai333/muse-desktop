@@ -8,14 +8,16 @@
 
 ## 协议 authority 与冻结门
 
-Android 原 worker 负责 `docs/protocols/account-transfer-v1.md` 和 `checks/fixtures/account-transfer-v1/`。PC 只复制经两端复核的相同规范，不自行改参数。当前候选为 PBKDF2-HMAC-SHA256 600000 次、16-byte salt、32-byte key；AES-256-GCM 12-byte nonce、16-byte tag 追加在密文后；固定 AAD、规范 Base64 和外层顺序严格按协议。密码 UTF-8 原字节，不 trim/正规化。先通过 Java 固定/随机包，再用 Rust 随机包反向解密，双方确认后冻结。
+Android 原 worker 负责 `docs/protocols/account-transfer-v1.md` 和 `checks/fixtures/account-transfer-v1/`。Java 固定/随机文件已由 Rust 实际消费，Rust 随机文件也已由 Java/JCA 解回且逐字节一致；v1 已共同冻结，完整规范 SHA256 为 `b1aa1e6f476233ebdb31551315ef47ce85537eb80f22c22c6d52e556e86e0596`。PC 原字节同步规范与互操作记录，不自行改参数。
+
+固定采用 PBKDF2-HMAC-SHA256 600000 次、16-byte salt、32-byte key，以及 AES-256-GCM 12-byte nonce、16-byte tag 追加密文的布局。文本编码为 UTF-8，保留原始字符、空格和换行，不做 trim 或正规化；固定 AAD、规范 Base64 和外层顺序均以冻结协议为准。互解证据仅为 Windows Rust 与 JBR21/JCA host codec，不等于 Android 设备或真实身份通过。
 
 ## 边界与文件地图
 
 - `account_transfer.rs`：严格 envelope、认证加密、typed payload/字段引用校验、密文文件读写；维护库 `ring` 复用锁定版本。敏感 owned buffer 尽早清零，不派生 Debug。
 - `transfer_plan.rs`：包内引用到新本地 UUID 的候选图、代理 vault 分阶段写入/清理、目标旁路策略、预览信息、提交前冲突校验。
-- `transfer_ui.rs`：账号选择/密码确认/文件对话框/导入预览和确认；后台任务用 generation + 弱 entity 拒绝过时结果。
-- `browser.rs` / `browser_macos.rs`：原生本地 Cookie 快照读取，候选 about:blank 路由及 Cookie staging/验证、失败清理；不为导出导航 Muse。
+- `transfer_ui.rs` / `transfer_flow.rs` / `transfer_view.rs`：账号选择、密码确认、文件对话框与预览；任务 ID、原子取消/提交门和专属 receiver 拒绝过时结果。
+- `browser_transfer.rs` / `browser_transfer_macos.rs` / `transfer_cookies.rs`：原生本地 Cookie 快照读取，候选 about:blank 路由及 Cookie staging/验证、失败处理；不为导出导航 Muse。原有 header 路径保持独立。
 - `muse-core/src/lib.rs`：只添加必要、向后兼容的迁移来源记录；来源标记不是实际路由。
 - `input.rs`：迁移密码使用精确粘贴，不沿用普通输入框换行替换。
 - `ui.rs` / `account_cards.rs`：现有账号菜单接入和 overlay 生命周期。
@@ -24,7 +26,9 @@ Android 原 worker 负责 `docs/protocols/account-transfer-v1.md` 和 `checks/fi
 
 每个包内代理 ref 生成一个新 UUID/vault revision；共享 ref 保留，不按地址或名称合并已有节点。新账号、新 profile、新 vault 身份。禁止导出 bridge、设备 vault blob/引用、profile 路径、revision。
 
-prepare graph → vault → route/profile about:blank → stage Cookie/readback → final candidate metadata commit → activate。候选不得进入 workspace 前台/额度/studio 调度。提交时基于最新 workspace 合并仅新对象，禁止旧快照覆盖并发变化；提交期间通过明确的短提交屏障避免持久化竞态。任何错误/取消/过时结果清除候选资源，不改包外账号；指定代理失败不直连。提交后网页身份仍须另行确认，Cookie 存在不代表身份成功。
+prepare graph → vault → route/profile about:blank → stage Cookie/readback → final candidate metadata commit → activate。候选不得进入 workspace 前台/额度/studio 调度。提交时基于最新 workspace 合并仅新对象，禁止旧快照覆盖并发变化；提交期间通过明确的短提交屏障避免持久化竞态。任何错误、取消或过时结果都不发布候选，仅处理本批新资源，不修改包外账号；指定代理失败不直连。提交后网页身份仍须另行确认，Cookie 存在不代表身份成功。
+
+原生写入以平台回调和读回作为完成屏障，不宣称额外的跨进程磁盘 fsync 保证；会话 Cookie 不增加持久期限。失败/取消不登记或激活候选，仅请求清理本批原生资源与新 vault revision，不宣称所有平台都已验证磁盘 profile 的彻底擦除。
 
 Windows strict 复用 force_proxy=true；platform 复用 false。Mac 当前只可声明 platform，不能称 failover=false 等于 strict。跨策略转换、系统网络、localhost/私网设备地址和 header/未知 Cookie 属性均在预览说明，并经确认。无法可靠恢复的属性/路由拒绝，不静默降级。再次导出写当前执行策略，来源值只作 provenance。
 
