@@ -1,0 +1,5 @@
+Producer=Java JCA JBR21.0.10 standard PBKDF2WithHmacSHA256 and AES/GCM/NoPadding
+Passphrases=unicode.properties and ascii.properties passphrase_utf8_base64
+Payload=payload.json exact bytes
+java-unicode.muse-account SHA256=2995893253a793eabcc17b813fe35139ff7c7c3a446010b41d949991811b699d
+java-ascii.muse-account SHA256=0b3b7a25dd482ccde7f57a5e0f2c8547e644d659d3ab90773d5b0931c6242e59

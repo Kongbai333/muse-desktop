@@ -3342,6 +3342,7 @@ dependencies = [
  "objc2-foundation",
  "percent-encoding",
  "raw-window-handle",
+ "ring",
  "security-framework",
  "serde",
  "serde_json",

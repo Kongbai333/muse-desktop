@@ -2,6 +2,7 @@
 
 mod account_cache;
 mod account_settings;
+mod account_transfer;
 mod assets;
 mod browser;
 mod cookie_export;
