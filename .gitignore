@@ -7,7 +7,6 @@
 /dist/
 /backup*/
 /scripts/publish-local.ps1
-/scripts/check-cookie-import.cjs
 /.env
 /.env.*
 *.keystore
