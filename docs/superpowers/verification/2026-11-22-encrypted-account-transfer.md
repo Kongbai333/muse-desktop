@@ -113,3 +113,33 @@ Windows Rust/ring 0.17.14 实际消费 Java 固定及随机文件，解密明文
 - `py -3 .superpowers/run-cookie-native.py proxy`：exit 0，合成证据 `.runtime/cookie-native-mya8qf4n/`。
 
 原始日志为 `.superpowers/sdd/2026-11-22-encrypted-account-transfer/ci-cookie-diagnostics-{red,green,workspace,build,native-direct,native-proxy}.log`，另保存 `ci-first-macos-x64.log`。Windows 合成通过不代替 Mac 运行；后续仍由协调者唯一 dispatch，不执行 rerun/dispatch 或真实账号请求。
+
+## 2026-11-23 Secure=false 的 Foundation 编码修复
+
+诊断 run `45046373789` 对应源码 `3f02d60aac6c0edebd07bf81c70e721ffe958631`。协调者提供的 arm64 job `137281779827` 与 x64 job `137281779837` 日志均确认：旧入口在 native 写入后的属性匹配拒绝，表单未退出、保存开启、账号数量 2→2；两个架构先行迁移 probe 的七项独立结果均 true。它们只证明已执行的先行 scope/staging 路径，尚未证明完整旧入口导航、后续代理 smoke 或真实 Muse 身份通过。
+
+沿失败 fixture（`secure=false`）比较映射时发现明确的 API 契约错误：Apple 对 `HTTPCookiePropertyKey.secure` 的官方说明为 “Providing any value for this key indicates that the cookie should remain secure.” Wry 0.57.1 的 `cookie_into_wkwebview` 在 `Some(false)` 时仍插入 NSString `FALSE`；本项目迁移 writer 也采用同样编码。Swift Foundation 开源实现的 `HTTPCookie.swift:310–315` 也将非空 secure 字符串判为 true。这是对错误编码的源码/文档依据；修复覆盖本次 Mac 故障仍以新 exact run 的原生结果为准。
+
+官方出处与此次抓取的本地证据：
+
+- `https://developer.apple.com/documentation/foundation/httpcookiepropertykey/secure`；JSON 原文下载自 `https://developer.apple.com/tutorials/data/documentation/foundation/httpcookiepropertykey/secure.json`。
+- `https://raw.githubusercontent.com/swiftlang/swift-corelibs-foundation/main/Sources/FoundationNetworking/HTTPCookie.swift`。
+- 原文快照在 `.superpowers/sdd/2026-11-22-encrypted-account-transfer/apple-httpcookie-secure.json` 和 `swift-httpcookie.swift`。Swift 原文属于开源 Foundation 的旁证，不冒充在 Apple Mac 运行的结果。
+
+本次变更：
+
+- 原 Cookie 入口仅在目标为 macOS 且源 `secure=false` 时，给 Wry 的 Cookie 省略 Secure 标记，使其不写 Foundation 键；Windows 仍用既有显式 bool，`secure=true` 两端不变。原始 `ImportedCookie.secure=false` 及 `matches` 的严格属性比较均未改变。
+- Mac 迁移 writer 同样在 false 时省略键，true 时保持 `TRUE`。小范围提取其既有 Foundation 构造代码，以便 Mac-only 测试直接运行生产 builder，并验证 true/false、HttpOnly、SameSite、path 与 expiry；该测试尚未在本机 Windows 执行。
+- 既有原生迁移 probe 的 session/path Cookie 明确设 `secure=false`，与另一条 true Cookie 一起通过真实 native writer/readback。保留旧入口原始 false fixture、全部属性断言与失败拒绝，不通过修改 fixture 隐藏故障。不改 wire/v1、代理策略、签名/版本或 workflow。
+
+此功能修复源码的 Windows 新鲜验证：
+
+- `cargo test -p muse-desktop --locked cookie_import::tests::webkit_omits_false_secure_on_write_but_still_rejects_secure_readback`：先 RED（Some(false) 与要求省略的 None 不符），exit 101；修复后 `cargo test -p muse-desktop --locked cookie_import::tests` 为 11/11，exit 0。
+- `cargo test --workspace --locked`：146 项通过（3+16+5+108+1+13），exit 0；新增 Mac-only Foundation 测试由后续 Mac CI 执行，不计入这 146 项。
+- `cargo build -p muse-desktop --locked`、`cargo check --release -p muse-desktop --locked`、`cargo fmt --all -- --check`、`git diff --check`：均 exit 0，保留既有 warnings。
+- `py -3 -m unittest discover -s tests -p test_macos_package.py`：7 项通过，exit 0。
+- 原 Cookie direct/proxy：`py -3 .superpowers/run-cookie-native.py` 与末尾加 `proxy`，均 exit 0；证据 `.runtime/cookie-native-uszdfef2/`、`.runtime/cookie-native-vpxiolel/`，均包含加强后的迁移原生 probe。
+- 加密迁移 UI direct/proxy-dark：`py -3 scripts/check-account-transfer-native.py` 与末尾加 `--proxy --dark`，均 exit 0；证据 `.runtime/encrypted-transfer-native-q9_ggxp0/`、`.runtime/encrypted-transfer-native-ibdkt9cq/`。
+- 冻结规范 SHA256 仍为 `b1aa1e6f476233ebdb31551315ef47ce85537eb80f22c22c6d52e556e86e0596`。
+
+原始日志为 `.superpowers/sdd/2026-11-22-encrypted-account-transfer/ci-cookie-secure-{red,green,workspace,build,release-check,python,native-direct,native-proxy,ui-direct,ui-proxy}.log`。本轮不在 Windows 声称新 Mac 修复已原生通过；普通 push 后由协调者唯一 dispatch，继续核对两种 Mac 架构及 Windows 的 exact run。未触碰真实账号、Cookie、代理凭据或真实身份请求。

@@ -21,6 +21,8 @@ pub(in crate::ui) fn check(this: &mut MuseWindow, window: &Window) -> Result<(),
     scoped.path = Some("/api".into());
     scoped.session = Some(true);
     scoped.expires_at_unix_seconds = None;
+    // Exercise false as well as true through the actual native migration writer.
+    scoped.secure = Some(false);
     payload.accounts[0].cookies.items.push(scoped);
     let mut second = payload.accounts[0].clone();
     second.account_ref = "second".into();

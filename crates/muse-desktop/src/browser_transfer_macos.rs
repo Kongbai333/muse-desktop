@@ -91,12 +91,9 @@ pub(super) fn read(view: &WebView) -> Result<Vec<wire::Cookie>, String> {
     }
     wait(&output)?
 }
-pub(super) fn write(
-    view: &WebView,
+fn native_cookie(
     item: &crate::cookie_import::ImportedCookie,
-) -> Result<(), String> {
-    let output = Arc::new(Mutex::new(None));
-    let returned = output.clone();
+) -> Result<Retained<AnyObject>, String> {
     unsafe {
         let properties: Retained<AnyObject> = msg_send![class!(NSMutableDictionary), dictionary];
         let text = |key: &str, value: &str| {
@@ -108,7 +105,10 @@ pub(super) fn write(
         text("Value", &item.value);
         text("Domain", &item.domain);
         text("Path", &item.path);
-        text("Secure", if item.secure { "TRUE" } else { "FALSE" });
+        // NSHTTPCookieSecure is a presence flag: even "FALSE" means secure.
+        if item.secure {
+            text("Secure", "TRUE");
+        }
         text("HttpOnly", if item.http_only { "TRUE" } else { "FALSE" });
         // Matches Wry 0.57.1's Foundation dictionary mapping. macOS native read-back is mandatory;
         // Windows tests do not establish that these properties are accepted by WKHTTPCookieStore.
@@ -125,7 +125,18 @@ pub(super) fn write(
         }
         let cookie: Option<Retained<AnyObject>> =
             msg_send![class!(NSHTTPCookie), cookieWithProperties: &*properties];
-        let cookie = cookie.ok_or("macOS 无法创建此 Cookie，未激活账号")?;
+        cookie.ok_or_else(|| "macOS 无法创建此 Cookie，未激活账号".into())
+    }
+}
+
+pub(super) fn write(
+    view: &WebView,
+    item: &crate::cookie_import::ImportedCookie,
+) -> Result<(), String> {
+    let cookie = native_cookie(item)?;
+    let output = Arc::new(Mutex::new(None));
+    let returned = output.clone();
+    unsafe {
         let block = block2::RcBlock::new(move || {
             if let Ok(mut slot) = returned.lock() {
                 *slot = Some(());
@@ -133,5 +144,41 @@ pub(super) fn write(
         });
         let _: () = msg_send![&*store(view), setCookie: &*cookie, completionHandler: &*block];
         wait(&output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn foundation_cookie_keeps_both_secure_values_and_other_imported_attributes() {
+        let expires = (crate::page_observer::now_ms() / 1000 + 3600) as i64;
+        for secure in [false, true] {
+            let item = crate::cookie_import::ImportedCookie {
+                name: "hatch_sess".into(),
+                value: zeroize::Zeroizing::new("synthetic-foundation-flag".into()),
+                domain: "muse.ai".into(),
+                path: "/api".into(),
+                expires: Some(expires),
+                http_only: true,
+                secure,
+                same_site: Some(wry::cookie::SameSite::Lax),
+            };
+            let cookie = native_cookie(&item).unwrap();
+            unsafe {
+                let actual_secure: Bool = msg_send![&*cookie, isSecure];
+                assert_eq!(actual_secure.as_bool(), secure);
+                let http_only: Bool = msg_send![&*cookie, isHTTPOnly];
+                assert!(http_only.as_bool());
+                let path: Retained<NSString> = msg_send![&*cookie, path];
+                assert_eq!(path.to_string(), "/api");
+                let site: Option<Retained<NSString>> = msg_send![&*cookie, sameSitePolicy];
+                assert_eq!(site.unwrap().to_string(), "lax");
+                let expiry: Option<Retained<AnyObject>> = msg_send![&*cookie, expiresDate];
+                let seconds: f64 = msg_send![&*expiry.unwrap(), timeIntervalSince1970];
+                assert!((seconds - expires as f64).abs() <= 1.);
+            }
+        }
     }
 }
