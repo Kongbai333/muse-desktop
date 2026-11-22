@@ -1956,7 +1956,6 @@ mod studio_transcript;
 #[path = "studio_ui.rs"]
 mod studio_ui;
 #[path = "transfer_smoke.rs"]
-#[cfg(debug_assertions)]
 mod transfer_smoke;
 #[path = "transfer_ui.rs"]
 mod transfer_ui;

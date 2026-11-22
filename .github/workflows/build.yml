@@ -1,4 +1,5 @@
 name: Desktop clients
+run-name: ${{ github.workflow }} / ${{ inputs.build_request_id || github.ref_name }}
 
 on:
   push:
@@ -7,6 +8,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      build_request_id:
+        description: Optional build tracking identifier (display only)
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read

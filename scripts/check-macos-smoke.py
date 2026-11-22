@@ -10,6 +10,25 @@ import sys
 import tempfile
 
 
+def native_cookie_flags(flag):
+    if flag in ("--smoke-test", "--proxy-smoke-test"):
+        return ["--cookie-import-smoke-test", "--transfer-smoke-test"]
+    return []
+
+
+def check_transfer_report(root):
+    try:
+        report = json.loads((root / "transfer-native-result.json").read_text())
+    except (OSError, ValueError):
+        raise SystemExit("Native account transfer report is missing or invalid") from None
+    checks = ("passed", "native_scope_readback", "http_only_same_site_expiry", "shared_proxy_snapshot",
+              "account_isolation", "no_navigation_before_commit", "no_metadata_before_commit")
+    for check in checks:
+        if report.get(check) is not True:
+            raise SystemExit(f"Native account transfer failed: {check}")
+    print(json.dumps({key: report[key] for key in checks}, indent=2))
+
+
 def main():
     if sys.platform != "darwin":
         raise SystemExit("This native smoke check requires macOS")
@@ -32,7 +51,7 @@ def check_run(binary, flag):
     with tempfile.TemporaryDirectory(prefix="muse-native-smoke-") as directory:
         root = pathlib.Path(directory)
         try:
-            extra = ["--cookie-import-smoke-test"] if flag in ("--smoke-test", "--proxy-smoke-test") else []
+            extra = native_cookie_flags(flag)
             subprocess.run([str(binary), flag, *extra, "--data-dir", str(root)], check=True, timeout=75)
         except (subprocess.SubprocessError, OSError):
             if (root / "crash.log").exists():
@@ -48,6 +67,7 @@ def check_run(binary, flag):
         if report.get("webview_pixels_visible") is not None:
             raise SystemExit("Unexpected Windows pixel result in the macOS smoke report")
         if flag in ("--smoke-test", "--proxy-smoke-test"):
+            check_transfer_report(root)
             for check in ("cookie_import_isolated_and_private", "cookie_import_cookie_sent_on_navigation", "cookie_import_original_account_restored", "cookie_import_proxy_route_preserved", "cookie_import_expected_route_used"):
                 if report.get(check) is not True:
                     raise SystemExit(f"Native Cookie import failed: {check}")

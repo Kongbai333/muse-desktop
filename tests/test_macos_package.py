@@ -9,9 +9,36 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("package_macos", ROOT / "scripts/package-macos.py")
 packager = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(packager)
+smoke_spec = importlib.util.spec_from_file_location("macos_smoke", ROOT / "scripts/check-macos-smoke.py")
+smoke = importlib.util.module_from_spec(smoke_spec)
+smoke_spec.loader.exec_module(smoke)
 
 
 class MacPackageTests(unittest.TestCase):
+    def test_native_cookie_paths_include_the_new_transfer_adapter_check(self):
+        self.assertTrue(callable(getattr(smoke, "native_cookie_flags", None)))
+        for flag in ("--smoke-test", "--proxy-smoke-test"):
+            self.assertEqual(smoke.native_cookie_flags(flag),
+                             ["--cookie-import-smoke-test", "--transfer-smoke-test"])
+        self.assertEqual(smoke.native_cookie_flags("--proxy-edit-smoke-test"), [])
+
+    def test_native_transfer_report_cannot_be_missing_or_partially_passing(self):
+        self.assertTrue(callable(getattr(smoke, "check_transfer_report", None)))
+        import json
+        with tempfile.TemporaryDirectory(prefix="muse-native-contract-") as directory:
+            root = pathlib.Path(directory)
+            with self.assertRaises(SystemExit):
+                smoke.check_transfer_report(root)
+            report = {key: True for key in ("passed", "native_scope_readback", "http_only_same_site_expiry",
+                "shared_proxy_snapshot", "account_isolation", "no_navigation_before_commit", "no_metadata_before_commit")}
+            report["no_navigation_before_commit"] = False
+            (root / "transfer-native-result.json").write_text(json.dumps(report))
+            with self.assertRaises(SystemExit):
+                smoke.check_transfer_report(root)
+            report["no_navigation_before_commit"] = True
+            (root / "transfer-native-result.json").write_text(json.dumps(report))
+            smoke.check_transfer_report(root)
+
     def test_bundle_uses_actual_macho_architecture_and_contains_only_public_files(self):
         with tempfile.TemporaryDirectory(prefix="muse-mac-package-") as directory:
             root = pathlib.Path(directory)
