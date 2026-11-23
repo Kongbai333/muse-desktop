@@ -5,6 +5,19 @@ const sample = (usage) => ({ subscriptionType: 'PAID', usage });
 // Browser fixtures use a real EventTarget, matching the window interface that
 // the production observer uses for pointer, keyboard and wheel idle tracking.
 function withBrowserEvents(context) {
+  // Existing fixtures model unrelated avatar/quota behavior; the newly verified
+  // reader gets an unavailable model unless the case explicitly controls it.
+  if (!context.testInviteReader) {
+    const fetch = context.fetch;
+    context.fetch = (url, options) => {
+      if (String(url) === '/api/hatch/invite') {
+        assert.equal(options.method, 'GET');
+        assert.equal(options.body, undefined);
+        return Promise.resolve(new Response('{}', {headers:{'content-type':'application/json'}}));
+      }
+      return fetch(url, options);
+    };
+  }
   const events = new EventTarget();
   for (const method of ['addEventListener', 'removeEventListener', 'dispatchEvent']) {
     context[method] = events[method].bind(events);
@@ -306,4 +319,59 @@ test('site initiated read passively captures the verified invite model without i
   const snapshot=context.__museDesktopObserver.snapshot(false,false);
   assert.equal(snapshot.invite.code,'SYNTH123');assert.equal(snapshot.invite.remaining,7);
   assert.equal(snapshot.invite.redeemed,null);assert.equal(snapshot.quota,null);assert.equal(requests,1);
+});
+
+function invitationBrowser(fetch) {
+  const vm=require('node:vm'),fs=require('node:fs');let now=1000000;
+  class Clock extends Date { static now(){return now;} }
+  const context={testInviteReader:true,Date:Clock,URL,Headers,AbortController,TextDecoder,Uint8Array,setTimeout,clearTimeout,
+    location:new URL('https://muse.ai/thread/synthetic'),
+    document:{readyState:'complete',body:{innerText:'Ready app without invitation DOM',querySelectorAll:()=>[]},querySelectorAll:()=>[]},
+    fetch,getComputedStyle:()=>({display:'block',visibility:'visible',opacity:'1'})};
+  context.window=context;context.top=context;
+  vm.runInNewContext(fs.readFileSync(require.resolve('../assets/muse-observer.js'),'utf8'),withBrowserEvents(context));
+  return {context,advance(ms){now+=ms;},snapshot(force=false){return context.__museDesktopObserver.snapshot(force,false);},
+    async flush(){for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));}};
+}
+const invitationPayload={invite_state:'ELIGIBLE',code:'SYNTH123',max_uses:10,use_count:3,uses_remaining:7};
+const invitationResponse=(overrides={})=>new Response(JSON.stringify({...invitationPayload,...overrides}),{headers:{'content-type':'application/json'}});
+
+test('ready account automatically reads existing invitation with fixed same-origin GET and no panel click',async()=>{
+  const calls=[];const b=invitationBrowser(async(url,options)=>{calls.push({url,options});return invitationResponse();});
+  b.snapshot();await b.flush();
+  assert.equal(calls.length,1);assert.equal(calls[0].url,'/api/hatch/invite');
+  assert.equal(calls[0].options.method,'GET');assert.equal(calls[0].options.credentials,'same-origin');
+  assert.equal(calls[0].options.cache,'no-store');assert.equal(calls[0].options.redirect,'error');
+  assert.equal(calls[0].options.body,undefined);
+  const s=b.snapshot();assert.equal(s.invite.code,'SYNTH123');assert.equal(s.invite.remaining,7);assert.equal(s.invite.redeemed,null);
+  b.snapshot(true);await b.flush();assert.equal(calls.length,1,'force cannot storm successful invitation reads');
+});
+
+test('invitation 429 retains successful fields and time, waits five minutes, then accepts a legitimate zero',async()=>{
+  let calls=0;const b=invitationBrowser(async()=>++calls===2?new Response('',{status:429}):invitationResponse({uses_remaining:calls===1?7:0}));
+  b.snapshot();await b.flush();const original=b.snapshot().invite;
+  b.advance(300001);b.snapshot();await b.flush();
+  assert.equal(calls,2);assert.equal(b.snapshot().invite.observed_at,original.observed_at);
+  b.advance(299999);b.snapshot(true);await b.flush();assert.equal(calls,2);
+  b.advance(2);b.snapshot();await b.flush();assert.equal(calls,3);assert.equal(b.snapshot().invite.remaining,0);
+});
+
+test('invitation requests are single-flight and late replies cannot cross route or authentication epochs',async()=>{
+  const releases=[];let calls=0;const b=invitationBrowser(async()=>{calls++;return new Promise(r=>releases.push(r));});
+  b.snapshot();b.snapshot(true);await b.flush();assert.equal(calls,1);
+  b.context.location=new URL('https://muse.ai/thread/another-synthetic');
+  releases[0](invitationResponse());await b.flush();assert.equal(b.snapshot().invite,null,'old route does not publish');
+  b.advance(2001);b.snapshot();await b.flush();assert.equal(calls,2);
+  b.context.location=new URL('https://muse.ai/login');b.snapshot();
+  b.context.location=new URL('https://muse.ai/');b.snapshot();
+  releases[1](invitationResponse());await b.flush();assert.equal(b.snapshot().invite,null,'old auth epoch does not publish');
+  b.context.location=new URL('https://muse.ai/login');b.snapshot();
+  releases.slice(2).forEach(resolve=>resolve(new Response('{}')));await b.flush();
+});
+
+test('invitation auth failure blocks automatic retries until an actual state change or bounded manual retry',async()=>{
+  let calls=0;const b=invitationBrowser(async()=>++calls===1?new Response('',{status:403}):invitationResponse());
+  b.snapshot();await b.flush();b.advance(300001);b.snapshot();await b.flush();assert.equal(calls,1);
+  b.snapshot(true);await b.flush();assert.equal(calls,2);assert.equal(b.snapshot().invite.remaining,7);
+  b.context.location=new URL('https://example.test/');b.advance(300001);b.snapshot();await b.flush();assert.equal(calls,2);
 });

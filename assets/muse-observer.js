@@ -223,18 +223,47 @@
   let sessionEpoch=0, wasLoggedOut=false, avatar=null, avatarChecked=0;
   let avatarRecording=null;
   let invite=null, inviteChecked=0, inviteBusy=false;
+  let inviteNextAttempt=0, inviteLastAttempt=0, inviteFailures=0, inviteStatus='waiting', inviteController=null;
   function acceptInviteDom(found){
     if(!found)return;
     const same=invite && ['code','remaining','redeemed','earned'].every(k=>(invite[k]??null)===(found[k]??null));
     if(!same)invite={...found,observed_at:Date.now()};
   }
-  // Passive only: no synthetic click, focus change, hidden navigation or
-  // unverified server action. New read-only sources require source evidence.
-  async function refreshInvite(){
-    if(inviteBusy || !trusted(location.href) || wasLoggedOut || !contentReady(root))return 'skip';
+  // Observed 2026-11-23: site module152222 uses GET for operation=page,
+  // POST for generation. Only the existing-code GET reader is permitted here.
+  async function refreshInvite(force=false){
+    if(inviteBusy || !trusted(location.href) || wasLoggedOut || !contentReady(root)
+      || /\/(?:login|signin|sign-in)(?:\/|$)/i.test(location.pathname))return 'skip';
+    if(Date.now()<inviteNextAttempt && !(force && inviteStatus==='auth_required' && Date.now()-inviteLastAttempt>=30000))return 'skip';
     const found=parseInvite(root);
-    if(found){acceptInviteDom(found);return 'ok';}
-    return 'not_available';
+    if(found)acceptInviteDom(found);
+    inviteBusy=true;inviteLastAttempt=Date.now();
+    const epoch=sessionEpoch,route=location.href,controller=new AbortController();
+    inviteController=controller;
+    const current=()=>epoch===sessionEpoch && !wasLoggedOut && trusted(location.href) && location.href===route;
+    const timer=setTimeout(()=>controller.abort(),20000);
+    let status='request_failed';
+    try{
+      const response=await nativeFetch('/api/hatch/invite',{
+        method:'GET',credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal,
+      });
+      if(!current())return 'skip';
+      if(response.status===401 || response.status===403){status='auth_required';return status;}
+      if(!response.ok){status=response.status===429?'rate_limited':'request_failed';return status;}
+      if(!/application\/json/i.test(response.headers.get('content-type')||'')){status='unrecognized';return status;}
+      const value=parseInviteResponse(await boundedText(response));
+      if(!current())return 'skip';
+      if(!value){status='not_available';return status;}
+      invite={...value,observed_at:Date.now()};status='ok';return status;
+    }catch{return status;}
+    finally{
+      clearTimeout(timer);
+      if(epoch===sessionEpoch && inviteController===controller){
+        inviteBusy=false;inviteController=null;inviteStatus=status;
+        inviteFailures=status==='ok'?0:Math.min(inviteFailures+1,3);
+        inviteNextAttempt=Date.now()+(['ok','not_available'].includes(status)?300000:retryDelay(status,inviteFailures));
+      }
+    }
   }
   function stopAvatarRecording(discard=false) {
     if(avatarRecording?.timer != null)root.clearInterval(avatarRecording.timer);
@@ -377,7 +406,7 @@
             if(!response.ok || !/json|text\/x-component/.test(type))return;
             return boundedText(response.clone()).then(text=>{
               if(epoch!==sessionEpoch || wasLoggedOut || !trusted(location.href))return;
-              const found=parseInviteResponse(text);if(found)invite={...found,observed_at:Date.now()};
+              const found=parseInviteResponse(text);if(found){invite={...found,observed_at:Date.now()};inviteStatus='ok';inviteFailures=0;inviteNextAttempt=Date.now()+300000;}
             });
           }).catch(()=>{});
         }
@@ -404,8 +433,8 @@
           || Array.from(document.querySelectorAll('input[type="' + String.fromCharCode(112,97,115,115,119,111,114,100) + '"]')).some(el=>visible(root,el));
         // A credential dialog can be re-authentication/settings, not logout.
         // Invalidate pending requests, but let the host retain its stale cache.
-        if (authBlocked && !wasLoggedOut) { sessionEpoch++;activeController?.abort();activeController=null;busy=false; quota=null;avatar=null;invite=null;stopAvatarRecording(true); lastCode=loggedOut?'logged_out':'auth_required'; }
-        if (!authBlocked && wasLoggedOut) { lastAttempt=0;nextAttempt=0;failures=0; }
+        if (authBlocked && !wasLoggedOut) { sessionEpoch++;activeController?.abort();activeController=null;busy=false;inviteController?.abort();inviteController=null;inviteBusy=false; quota=null;avatar=null;invite=null;stopAvatarRecording(true); lastCode=loggedOut?'logged_out':'auth_required'; }
+        if (!authBlocked && wasLoggedOut) { lastAttempt=0;nextAttempt=0;failures=0;inviteLastAttempt=0;inviteNextAttempt=0;inviteFailures=0; }
         wasLoggedOut=authBlocked;
         if(force && showAvatar)stopAvatarRecording(true);
         if (!authBlocked && ready) void refresh(force);
@@ -413,12 +442,13 @@
           avatarChecked=Date.now();avatar=captureAvatar(root) || avatar;
         }
         if(showAvatar && !authBlocked && ready)recordAvatar();
-        if(!authBlocked && ready && !inviteBusy && Date.now()-inviteChecked>1000){
+        if(!authBlocked && ready && Date.now()-inviteChecked>1000){
           inviteChecked=Date.now();
           try{acceptInviteDom(parseInvite(root));}catch{}
         }
+        if(!authBlocked && ready)void refreshInvite(force);
       }
-      if(!allowed)stopAvatarRecording(true);
+      if(!allowed){stopAvatarRecording(true);inviteController?.abort();}
       let animation=null;
       if(showAvatar && allowed && !loggedOut && avatarRecording?.done && !avatarRecording.sent){
         animation={frames:avatarRecording.frames,frame_ms:avatarRecording.frame_ms};avatarRecording.sent=true;
