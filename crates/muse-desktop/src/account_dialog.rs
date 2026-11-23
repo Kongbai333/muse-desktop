@@ -279,7 +279,8 @@ impl MuseWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.save_enabled
+        if self.updates.open
+            || !self.save_enabled
             || self.cookie_dialog.is_some()
             || self
                 .account_dialog
@@ -644,7 +645,11 @@ impl MuseWindow {
     }
 
     pub(super) fn open_proxy_pool(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.save_enabled || self.cookie_dialog.is_some() || self.account_context.is_some() {
+        if self.updates.open
+            || !self.save_enabled
+            || self.cookie_dialog.is_some()
+            || self.account_context.is_some()
+        {
             return;
         }
         if self

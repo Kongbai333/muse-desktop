@@ -647,6 +647,13 @@ impl MuseWindow {
                         cx.listener(|this, _, window, cx| this.open_proxy_pool(window, cx)),
                     ))
                     .child(sidebar_nav(
+                        "sidebar-updates",
+                        "download",
+                        "检查更新",
+                        None,
+                        cx.listener(|this, _, window, cx| this.show_updates(window, cx)),
+                    ))
+                    .child(sidebar_nav(
                         "sidebar-add-footer",
                         "plus",
                         "新增账号",
@@ -778,6 +785,14 @@ impl MuseWindow {
                 true,
                 false,
                 cx.listener(|this, _, window, cx| this.open_proxy_pool(window, cx)),
+            ))
+            .child(icon_button(
+                "compact-updates",
+                "download",
+                "检查更新",
+                true,
+                false,
+                cx.listener(|this, _, window, cx| this.show_updates(window, cx)),
             ))
     }
     #[inline(never)]

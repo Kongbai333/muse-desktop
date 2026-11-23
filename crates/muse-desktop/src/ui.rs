@@ -51,6 +51,7 @@ pub fn bind_keys(cx: &mut App) {
         crate::platform::key_binding("escape", CancelAccountDialog, Some("AccountDialog")),
         crate::platform::key_binding("escape", CancelAccountDialog, Some("CookieDialog")),
         crate::platform::key_binding("escape", CancelAccountDialog, Some("TransferDialog")),
+        crate::platform::key_binding("escape", CancelAccountDialog, Some("UpdateDialog")),
         crate::platform::key_binding("ctrl-enter", SaveAccountDialog, Some("TransferDialog")),
         crate::platform::key_binding("escape", CancelAccountDialog, Some("AccountContext")),
         crate::platform::key_binding("ctrl-enter", SaveAccountDialog, Some("AccountDialog")),
@@ -147,6 +148,7 @@ pub struct MuseWindow {
     transfer_dialog: Option<transfer_ui::TransferDialog>,
     cookie_logins: HashMap<AccountId, (muse_core::BrowserIdentity, Instant)>,
     account_context: Option<(AccountId, gpui::Point<Pixels>, TransitionState)>,
+    updates: update_ui::UpdateUi,
 }
 
 impl MuseWindow {
@@ -310,6 +312,8 @@ impl MuseWindow {
                 );
             }
         }
+        let updates =
+            update_ui::UpdateUi::new(&data_dir, diagnostic_home.is_none() && smoke.is_none());
         Self {
             workspace,
             browsers: BrowserPool::new(sender, data_dir.clone(), display),
@@ -372,6 +376,7 @@ impl MuseWindow {
             transfer_dialog: None,
             cookie_logins: HashMap::new(),
             account_context: None,
+            updates,
         }
     }
 
@@ -500,14 +505,17 @@ impl MuseWindow {
     }
 
     fn has_browser_overlay(&self) -> bool {
-        self.account_dialog.is_some()
+        self.updates.open
+            || self.account_dialog.is_some()
             || self.transfer_dialog.is_some()
             || self.cookie_dialog.is_some()
             || self.account_context.is_some()
     }
 
     fn dismiss_browser_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.transfer_dialog.is_some() {
+        if self.updates.open {
+            self.close_updates(window, cx);
+        } else if self.transfer_dialog.is_some() {
             self.close_transfer(window, cx);
         } else if self.account_dialog.is_some() {
             self.close_account_dialog(window, cx);
@@ -722,6 +730,7 @@ impl MuseWindow {
             return;
         }
         let mut changed = self.poll_proxy_editor(cx);
+        changed |= self.poll_updates(window, cx);
         changed |= self.poll_account_dialog(cx);
         let zoom_changed = self.browsers.zoom_changed(
             self.visible_browser_identity()
@@ -1977,3 +1986,5 @@ mod studio_ui;
 mod transfer_smoke;
 #[path = "transfer_ui.rs"]
 mod transfer_ui;
+#[path = "update_ui.rs"]
+mod update_ui;

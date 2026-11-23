@@ -25,3 +25,19 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Application updater
+
+The application updater uses ureq 3.5.2 (MIT OR Apache-2.0),
+ureq-proto 0.7.1 (MIT OR Apache-2.0), zip 6.0.0 (MIT),
+utf8-zero 0.8.1, webpki-roots 1.0.12, and zopfli 0.8.4.
+Their bundled license texts are under LICENSES/. semver uses the existing
+MIT OR Apache-2.0 dependency; SHA256 uses the already bundled ring library.
+Official source/API references:
+https://github.com/algesten/ureq
+https://github.com/zip-rs/zip2
+https://docs.github.com/en/rest/releases/releases#get-the-latest-release
+
+The updater's HTTPS source is the public Kongbai333/muse-desktop repository.
+A matching SHA256 protects download integrity; it is not an independent
+publisher signature. macOS packages remain ad-hoc signed and not notarized.

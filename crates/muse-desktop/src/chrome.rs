@@ -1393,7 +1393,9 @@ impl Render for MuseWindow {
             self.status.clone()
         };
         div()
-            .key_context(if self.transfer_dialog.is_some() {
+            .key_context(if self.updates.open {
+                "UpdateDialog"
+            } else if self.transfer_dialog.is_some() {
                 "TransferDialog"
             } else if self.account_dialog.is_some() {
                 "Muse AccountDialog"
@@ -1563,6 +1565,9 @@ impl Render for MuseWindow {
             })
             .when(self.transfer_dialog.is_some(), |element| {
                 element.child(self.render_transfer(window, cx))
+            })
+            .when(self.updates.open, |element| {
+                element.child(self.render_updates(cx))
             })
             .child(self.studio_layout_probe("root"))
     }

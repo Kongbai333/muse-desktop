@@ -122,7 +122,8 @@ impl MuseWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.transfer_dialog.is_some()
+        if self.updates.open
+            || self.transfer_dialog.is_some()
             || self.account_dialog.is_some()
             || self.cookie_dialog.is_some()
         {

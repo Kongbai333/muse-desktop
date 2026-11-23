@@ -36,6 +36,9 @@ mod transfer_cookies;
 mod transfer_flow;
 mod transfer_plan;
 mod ui;
+mod updater;
+mod updater_download;
+mod updater_install;
 mod window_state;
 #[cfg(target_os = "windows")]
 mod windows_caption;
@@ -54,16 +57,27 @@ use gpui::{
 use std::path::PathBuf;
 
 fn main() {
+    let arguments: Vec<String> = std::env::args().collect();
+    if let Some(code) = updater_install::entry(&arguments) {
+        std::process::exit(code);
+    }
+    let launch_directory =
+        std::env::current_dir().expect("Cannot determine the original launch directory");
+    updater_install::remember_launch_directory(launch_directory.clone());
     // GPUI's default DirectComposition target sits above child HWNDs. Wry's
     // WebView2 child must be able to paint over the native workspace surface.
     // SAFETY: this runs at process entry before any application threads start.
     unsafe { std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "1") };
-    let arguments: Vec<String> = std::env::args().collect();
     let data_dir = arguments
         .windows(2)
         .find(|pair| pair[0] == "--data-dir")
         .map(|pair| PathBuf::from(&pair[1]))
         .unwrap_or_else(platform::data_dir);
+    let data_dir = if data_dir.is_absolute() {
+        data_dir
+    } else {
+        launch_directory.join(data_dir)
+    };
     // The app has no console window, so a panic would otherwise close it silently.
     // Keep the last panic (message, source location and backtrace) next to the data.
     {
@@ -170,6 +184,7 @@ fn main() {
         return;
     }
     let diagnostics = smoke || arguments.iter().any(|arg| arg == "--diagnostics");
+    let update_background = arguments.iter().any(|arg| arg == "--update-background");
     let diagnostic_home = if diagnostics {
         Some(diagnostics::start().expect("Cannot bind local diagnostic server"))
     } else {
@@ -218,22 +233,44 @@ fn main() {
                 .or_else(|| window_state::SavedWindow::capture(WindowBounds::Windowed(bounds)))
                 .and_then(|saved| saved.restore(&displays))
                 .unwrap_or(WindowBounds::Windowed(bounds));
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(saved_bounds),
-                    window_min_size: Some(size(px(1030.), px(680.))),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Muse".into()),
-                        appears_transparent: true,
+            let opened = cx
+                .open_window(
+                    WindowOptions {
+                        focus: !update_background,
+                        show: !(cfg!(windows) && update_background),
+                        window_bounds: Some(saved_bounds),
+                        window_min_size: Some(size(px(1030.), px(680.))),
+                        titlebar: Some(TitlebarOptions {
+                            title: Some("Muse".into()),
+                            appears_transparent: true,
+                            ..Default::default()
+                        }),
                         ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                move |window, cx| {
-                    cx.new(|cx| ui::MuseWindow::new(data_dir, diagnostic_home, smoke, window, cx))
-                },
-            )
-            .expect("Cannot open GPUI window");
-            cx.activate(true);
+                    },
+                    move |window, cx| {
+                        cx.new(|cx| {
+                            ui::MuseWindow::new(data_dir, diagnostic_home, smoke, window, cx)
+                        })
+                    },
+                )
+                .expect("Cannot open GPUI window");
+            #[cfg(windows)]
+            if update_background {
+                cx.defer(move |cx| {
+                    // Resizing while borrowing Window drops its native resize
+                    // callback. Obtain the handle, then show outside the borrow.
+                    if let Ok(Ok(hwnd)) =
+                        opened.update(cx, |_, window, _| crate::windows_host::hwnd(window))
+                    {
+                        updater_install::show_background(hwnd, saved_bounds);
+                    }
+                });
+            }
+            #[cfg(not(windows))]
+            let _ = opened;
+            updater_install::record_startup(&arguments);
+            if !update_background {
+                cx.activate(true);
+            }
         });
 }

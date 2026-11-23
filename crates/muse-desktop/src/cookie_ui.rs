@@ -9,7 +9,8 @@ impl MuseWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.account_dialog.is_some()
+        if self.updates.open
+            || self.account_dialog.is_some()
             || self
                 .cookie_dialog
                 .as_ref()
