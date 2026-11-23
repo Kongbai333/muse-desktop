@@ -23,6 +23,7 @@ test('plan label follows explicit subscription metadata instead of defaulting to
   assert.equal(adapter.planLabel({subscriptionType:'FREE'}),'免费版');
   assert.equal(adapter.planLabel({subscriptionType:'PAID',tier:{name:'Pro'}}),'Pro');
   assert.equal(adapter.planLabel({}),'套餐');
+  assert.equal(adapter.parseSubscription({subscriptionType:'FUTURE',usage:{state:'AVAILABLE',percentUsed:25}}).plan_label,undefined);
 });
 test('avatar capture uses only explicit account media and produces a bounded frame',()=>{
   const image={naturalWidth:128,naturalHeight:128,getBoundingClientRect:()=>({width:48,height:48}),closest:()=>null};
@@ -241,4 +242,68 @@ test('avatar recording stops when a document leaves the trusted Muse origin', ()
   context.location=new URL('https://example.test/');tick();
   assert.equal(cleared,true);
   assert.equal(context.__museDesktopObserver.snapshot().avatar_animation,null);
+});
+
+test('bounded retry distinguishes auth and rate limit and never storms on force',()=>{
+  assert.equal(adapter.retryDelay('request_failed',1),2000);
+  assert.equal(adapter.retryDelay('request_failed',2),10000);
+  assert.equal(adapter.retryDelay('request_failed',3),90000);
+  assert.equal(adapter.retryDelay('rate_limited',1),300000);
+  assert.equal(adapter.retryDelay('logged_out',1),Infinity);
+});
+test('automatic invitation reads never click, focus or navigate the page',async()=>{
+  const vm=require('node:vm'),fs=require('node:fs');let clicks=0;
+  const trigger={innerText:'Invite',getAttribute:()=>'',getBoundingClientRect:()=>({width:40,height:40}),click(){clicks++;}};
+  const context={URL,Headers,AbortController,TextDecoder,Uint8Array,setTimeout,clearTimeout,
+    location:new URL('https://muse.ai/'),document:{readyState:'complete',body:{innerText:'Ready',querySelectorAll:()=>[]},querySelectorAll:s=>s==='button,[role="button"],a'?[trigger]:[]},
+    fetch:async()=>{throw Error('no request expected');},getComputedStyle:()=>({display:'block',visibility:'visible',opacity:'1'})};
+  context.window=context;context.top=context;
+  vm.runInNewContext(fs.readFileSync(require.resolve('../assets/muse-observer.js'),'utf8'),withBrowserEvents(context));
+  await context.__museDesktopObserver.refreshInvite();
+  assert.equal(clicks,0);
+});
+
+test('passive public invite model keeps uses_remaining separate from redeemed friends',()=>{
+  const payload={invite_state:'ELIGIBLE',code:'SYNTH123',max_uses:10,use_count:3,uses_remaining:7};
+  assert.deepEqual(adapter.parseInviteResponse(JSON.stringify({data:payload})),{code:'SYNTH123',remaining:7,redeemed:null,earned:null});
+  assert.equal(adapter.parseInviteResponse(JSON.stringify({...payload,uses_remaining:0})).remaining,0);
+  assert.equal(adapter.parseInviteResponse(JSON.stringify({...payload,use_count:11})),null);
+  assert.equal(adapter.parseInviteResponse(JSON.stringify({...payload,code:null})),null);
+  assert.equal(adapter.parseInviteResponse(JSON.stringify({...payload,uses_remaining:null})).remaining,null);
+});
+
+test('403 keeps last success without claiming logout and auth retry requires a new explicit attempt',async()=>{
+  const vm=require('node:vm'),fs=require('node:fs');let now=1000000,requests=0;
+  class Clock extends Date { static now(){return now;} }
+  const id='d'.repeat(40);
+  const context={Date:Clock,URL,Headers,AbortController,TextDecoder,Uint8Array,setTimeout,clearTimeout,
+    location:new URL('https://muse.ai/'),document:{readyState:'complete',body:{innerText:'Ready',querySelectorAll:()=>[]},querySelectorAll:s=>s==='script[src]'?[{src:'https://muse.ai/_next/static/test.js'}]:[]},
+    fetch:async(url)=>String(url).endsWith('.js')?new Response(`createServerReference("${id}",x,"fetchSubscriptionAction")`):(++requests===2?new Response('denied',{status:403}):new Response(JSON.stringify(sample({state:'AVAILABLE',percentUsed:requests===1?25:0})))),
+    getComputedStyle:()=>({display:'block',visibility:'visible',opacity:'1'})};
+  context.window=context;context.top=context;
+  vm.runInNewContext(fs.readFileSync(require.resolve('../assets/muse-observer.js'),'utf8'),withBrowserEvents(context));
+  const flush=async()=>{for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));};
+  context.__museDesktopObserver.snapshot(true,false);await flush();
+  const at=context.__museDesktopObserver.snapshot(false,false).quota.observed_at;
+  now+=2001;context.__museDesktopObserver.snapshot(true,false);await flush();
+  let snapshot=context.__museDesktopObserver.snapshot(false,false);
+  assert.equal(snapshot.quota_status,'auth_required');assert.equal(snapshot.quota.used_percent,25);assert.equal(snapshot.quota.observed_at,at);
+  now+=10000;context.__museDesktopObserver.snapshot(true,false);await flush();assert.equal(requests,2);
+  now+=30001;context.__museDesktopObserver.snapshot(true,false);await flush();
+  snapshot=context.__museDesktopObserver.snapshot(false,false);assert.equal(requests,3);assert.equal(snapshot.quota.used_percent,0);assert.equal(snapshot.quota_status,'ok');
+  context.document.querySelectorAll=s=>s.startsWith('input[type=')?[{getBoundingClientRect:()=>({width:100,height:30})}]:[];
+  assert.equal(context.__museDesktopObserver.snapshot(false,false).quota_status,'auth_required','a password dialog on an authenticated route is not confirmed logout');
+});
+test('site initiated read passively captures the verified invite model without issuing a second request',async()=>{
+  const vm=require('node:vm'),fs=require('node:fs');let requests=0;
+  const context={URL,Headers,AbortController,TextDecoder,Uint8Array,setTimeout,clearTimeout,
+    location:new URL('https://muse.ai/'),document:{readyState:'complete',body:{innerText:'Ready',querySelectorAll:()=>[]},querySelectorAll:()=>[]},
+    fetch:async()=>{requests++;return new Response(JSON.stringify({data:{invite_state:'ELIGIBLE',code:'SYNTH123',max_uses:10,use_count:3,uses_remaining:7}}),{headers:{'content-type':'application/json'}});},
+    getComputedStyle:()=>({display:'block',visibility:'visible',opacity:'1'})};
+  context.window=context;context.top=context;
+  vm.runInNewContext(fs.readFileSync(require.resolve('../assets/muse-observer.js'),'utf8'),withBrowserEvents(context));
+  await context.fetch('/api/site-owned-read');for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
+  const snapshot=context.__museDesktopObserver.snapshot(false,false);
+  assert.equal(snapshot.invite.code,'SYNTH123');assert.equal(snapshot.invite.remaining,7);
+  assert.equal(snapshot.invite.redeemed,null);assert.equal(snapshot.quota,null);assert.equal(requests,1);
 });

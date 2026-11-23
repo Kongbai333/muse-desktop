@@ -31,8 +31,37 @@ pub struct InviteInfo {
     pub redeemed: Option<u32>,
     pub earned: Option<String>,
     pub observed_at: u64,
+    #[serde(default)]
+    pub remaining_at: Option<u64>,
+    #[serde(default)]
+    pub redeemed_at: Option<u64>,
+    #[serde(default)]
+    pub earned_at: Option<u64>,
 }
 impl InviteInfo {
+    /// Omitted fields must not clear the last success or refresh its age.
+    pub fn merge(mut self, previous: &Self) -> Self {
+        if self.code != previous.code {
+            return self;
+        }
+        macro_rules! merge_field {
+            ($value:ident, $at:ident) => {
+                if self.$value.is_none()
+                    || self.$at.unwrap_or(self.observed_at)
+                        < previous.$at.unwrap_or(previous.observed_at)
+                {
+                    self.$value = previous.$value.clone();
+                    self.$at = previous
+                        .$at
+                        .or(previous.$value.as_ref().map(|_| previous.observed_at));
+                }
+            };
+        }
+        merge_field!(remaining, remaining_at);
+        merge_field!(redeemed, redeemed_at);
+        merge_field!(earned, earned_at);
+        self
+    }
     pub fn same_content(&self, other: &Self) -> bool {
         self.code == other.code
             && self.remaining == other.remaining
@@ -133,7 +162,9 @@ pub fn store(root: &Path, workspace: &Workspace, id: AccountId, plan: Option<&St
     };
     let (quota, unlimited) = match &account.quota {
         QuotaState::Known(q) | QuotaState::Stale(q) => (Some(q.clone()), None),
-        QuotaState::Unlimited { observed_at } => (None, Some(*observed_at)),
+        QuotaState::Unlimited { observed_at } | QuotaState::StaleUnlimited { observed_at } => {
+            (None, Some(*observed_at))
+        }
         _ => return,
     };
     let extra = match &account.extra_quota {
@@ -165,4 +196,26 @@ pub fn remove(root: &Path, id: AccountId) {
         root.join("account-cache")
             .join(format!("{id}-display.json")),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sparse_invite_updates_keep_each_fields_original_success_time_and_valid_zero() {
+        let old: InviteInfo = serde_json::from_str(
+            r#"{"code":"SYNTH123","remaining":7,"redeemed":2,"earned":"10","observed_at":1000}"#,
+        )
+        .unwrap();
+        let next:InviteInfo=serde_json::from_str(r#"{"code":"SYNTH123","remaining":null,"redeemed":0,"earned":null,"observed_at":5000,"redeemed_at":5000}"#).unwrap();
+        let merged = next.merge(&old);
+        assert_eq!(merged.remaining, Some(7));
+        assert_eq!(merged.remaining_at, Some(1000));
+        assert_eq!(merged.redeemed, Some(0));
+        assert_eq!(merged.redeemed_at, Some(5000));
+        assert_eq!(merged.earned.as_deref(), Some("10"));
+        assert_eq!(merged.earned_at, Some(1000));
+        let changed:InviteInfo=serde_json::from_str(r#"{"code":"OTHER123","remaining":null,"redeemed":null,"earned":null,"observed_at":6000}"#).unwrap();
+        assert_eq!(changed.merge(&merged).remaining, None);
+    }
 }

@@ -90,7 +90,7 @@ impl ExtraQuotaState {
         match self {
             Self::Unknown => "尚未读取额外额度".into(),
             Self::Known(v) => v.label(),
-            Self::Stale(_) => "额外额度需刷新".into(),
+            Self::Stale(v) => format!("{} · 未更新", v.label()),
         }
     }
 }

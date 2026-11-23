@@ -301,6 +301,60 @@ fn a_stale_or_unavailable_quota_never_claims_to_be_current_remaining_usage() {
 }
 
 #[test]
+fn transient_status_preserves_last_success_and_unlimited_timestamp() {
+    let mut workspace = Workspace::new();
+    let id = workspace.add_account("synthetic");
+    let identity = workspace.active_browser_identity().unwrap();
+    workspace.apply_quota(
+        identity,
+        "https://muse.ai/",
+        QuotaObservation::new(25., 100., "%", 1000, None).unwrap(),
+    );
+    workspace.expire_quotas(301001);
+    workspace.apply_quota_status(
+        identity,
+        "https://muse.ai/",
+        QuotaState::Unavailable("retry".into()),
+    );
+    assert_eq!(
+        workspace.account(id).unwrap().quota.observed_at(),
+        Some(1000)
+    );
+    assert!(workspace.account(id).unwrap().quota.label().contains("75"));
+    workspace.apply_quota_status(
+        identity,
+        "https://muse.ai/",
+        QuotaState::Unlimited {
+            observed_at: 400000,
+        },
+    );
+    workspace.expire_quotas(800000);
+    assert_eq!(
+        workspace.account(id).unwrap().quota.observed_at(),
+        Some(400000)
+    );
+    assert!(
+        workspace
+            .account(id)
+            .unwrap()
+            .quota
+            .label()
+            .contains("不限量")
+    );
+    workspace.apply_quota_status(identity, "https://muse.ai/", QuotaState::LoggedOut);
+    assert_eq!(workspace.account(id).unwrap().quota, QuotaState::LoggedOut);
+    workspace.apply_quota(
+        identity,
+        "https://muse.ai/",
+        QuotaObservation::new(0., 100., "%", 900000, None).unwrap(),
+    );
+    assert_eq!(
+        workspace.account(id).unwrap().quota.remaining_ratio(),
+        Some(1.)
+    );
+}
+
+#[test]
 fn older_workspaces_without_network_metadata_keep_their_existing_accounts() {
     let mut workspace = Workspace::new();
     let id = workspace.add_account("原账号");

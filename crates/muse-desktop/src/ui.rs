@@ -734,12 +734,7 @@ impl MuseWindow {
         self.avatars.retain(&self.workspace);
         let now = crate::page_observer::now_ms();
         for account in &mut self.workspace.accounts {
-            // Sleeping pages cannot report; their last reading stays on the card.
-            if self.cached_accounts.contains(&account.id)
-                || self.browsers.account_sleeping(account.id)
-            {
-                continue;
-            }
+            // Even sleeping/cached values age, but their last values stay visible.
             let quota = account.quota.clone().at_time(now);
             let extra = account.extra_quota.clone().at_time(now);
             changed |= quota != account.quota || extra != account.extra_quota;
@@ -895,11 +890,18 @@ impl MuseWindow {
                                     self.plan_labels
                                         .insert(identity.account_id, label.to_owned());
                                 }
-                                if let Some(info) =
+                                if let Some(mut info) =
                                     snapshot.invite.as_ref().and_then(|invite| invite.info())
                                 {
                                     let old = self.invites.get(&identity.account_id);
-                                    if old.is_none_or(|old| info.observed_at > old.observed_at) {
+                                    let now = crate::page_observer::now_ms();
+                                    if info.observed_at <= now.saturating_add(30_000)
+                                        && now.saturating_sub(info.observed_at) < 300_000
+                                        && old.is_none_or(|old| info.observed_at > old.observed_at)
+                                    {
+                                        if let Some(old) = old {
+                                            info = info.merge(old);
+                                        }
                                         let persist = old.is_none_or(|old| {
                                             !old.same_content(&info)
                                                 || info.observed_at.saturating_sub(old.observed_at)
@@ -924,6 +926,7 @@ impl MuseWindow {
                             let state = snapshot
                                 .quota
                                 .as_ref()
+                                .filter(|_| snapshot.quota_status == "ok")
                                 .and_then(|q| q.as_state(crate::page_observer::now_ms()));
                             if state.is_some() {
                                 self.cached_accounts.remove(&identity.account_id);
@@ -969,12 +972,12 @@ impl MuseWindow {
                                         "syncing" | "waiting" if !has_quota => {
                                             Some(muse_core::QuotaState::Syncing)
                                         }
-                                        "request_failed" if !has_quota => {
+                                        "request_failed" | "rate_limited" | "auth_required" => {
                                             Some(muse_core::QuotaState::Unavailable(
                                                 "额度同步失败，可重试".into(),
                                             ))
                                         }
-                                        "not_found" | "unrecognized" if !has_quota => {
+                                        "not_found" | "unrecognized" => {
                                             Some(muse_core::QuotaState::Unavailable(
                                                 "暂未读取到套餐额度".into(),
                                             ))
@@ -987,6 +990,17 @@ impl MuseWindow {
                                             &snapshot.url,
                                             status,
                                         );
+                                    }
+                                    if matches!(
+                                        snapshot.quota_status.as_str(),
+                                        "request_failed"
+                                            | "auth_required"
+                                            | "rate_limited"
+                                            | "not_found"
+                                            | "unrecognized"
+                                            | "logged_out"
+                                    ) {
+                                        self.refresh_accounts.remove(&identity.account_id);
                                     }
                                 }
                             }
@@ -1019,11 +1033,8 @@ impl MuseWindow {
                                     self.plan_labels.get(&identity.account_id),
                                 );
                             }
-                            if snapshot.quota_status == "not_found"
-                                && self.refresh_accounts.contains_key(&identity.account_id)
-                            {
-                                self.browsers.refresh_quota(identity);
-                            }
+                            // The page owns bounded retry/backoff. Forcing here on
+                            // every snapshot used to bypass its rate limit.
                         }
                         changed = true;
                     }
@@ -1192,8 +1203,7 @@ impl MuseWindow {
             self.browser_bounds(window),
         )
     }
-    /// Every running, logged-in account re-reads its invite counts every 30
-    /// minutes. The page itself skips the read while someone is using it.
+    /// Passive reads only. Never open an invitation UI on the user's behalf.
     fn schedule_invite_reads(&mut self) {
         let now = Instant::now();
         self.invite_jobs
@@ -1222,6 +1232,7 @@ impl MuseWindow {
                     generation: tab.generation,
                 })
             })
+            .take(2_usize.saturating_sub(self.invite_jobs.len()))
             .collect::<Vec<_>>();
         for identity in due {
             self.invite_next
@@ -1234,6 +1245,13 @@ impl MuseWindow {
     }
 
     fn refresh_account(&mut self, id: AccountId, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .refresh_accounts
+            .get(&id)
+            .is_some_and(|(_, at)| at.elapsed() < Duration::from_secs(45))
+        {
+            return;
+        }
         let Some(account) = self.workspace.account(id) else {
             return;
         };

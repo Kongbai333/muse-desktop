@@ -104,13 +104,18 @@ pub enum QuotaState {
     Unlimited {
         observed_at: u64,
     },
+    StaleUnlimited {
+        observed_at: u64,
+    },
 }
 
 impl QuotaState {
     pub fn observed_at(&self) -> Option<u64> {
         match self {
             Self::Known(v) | Self::Stale(v) => Some(v.observed_at),
-            Self::Unlimited { observed_at } => Some(*observed_at),
+            Self::Unlimited { observed_at } | Self::StaleUnlimited { observed_at } => {
+                Some(*observed_at)
+            }
             _ => None,
         }
     }
@@ -127,7 +132,7 @@ impl QuotaState {
                 if observed_at > now.saturating_add(30_000)
                     || now.saturating_sub(observed_at) >= 300_000 =>
             {
-                Self::Unknown
+                Self::StaleUnlimited { observed_at }
             }
             state => state,
         }
@@ -144,11 +149,12 @@ impl QuotaState {
             Self::Unknown => "尚未读取额度".into(),
             Self::Known(v) if v.unit == "%" => format!("剩余 {:.0}%", v.remaining()),
             Self::Known(v) => format!("剩余 {:.0}/{:.0} {}", v.remaining(), v.limit, v.unit),
-            Self::Stale(_) => "额度需刷新".into(),
+            Self::Stale(v) => format!("{} · 未更新", Self::Known(v.clone()).label()),
             Self::Unavailable(reason) => reason.clone(),
             Self::Syncing => "正在同步额度…".into(),
             Self::LoggedOut => "请先登录 Muse".into(),
             Self::Unlimited { .. } => "当前套餐不限量".into(),
+            Self::StaleUnlimited { .. } => "当前套餐不限量 · 未更新".into(),
         }
     }
 }
@@ -594,7 +600,7 @@ impl Workspace {
         &mut self,
         identity: BrowserIdentity,
         source_url: &str,
-        state: QuotaState,
+        mut state: QuotaState,
     ) -> bool {
         if !trusted_muse_url(source_url)
             || !self.contains_identity(identity)
@@ -616,6 +622,21 @@ impl Workspace {
             }
             if account.quota == state {
                 return false;
+            }
+            // Failure/absence is not a new successful observation. Keep the
+            // original value and timestamp; logout remains authoritative.
+            if matches!(
+                state,
+                QuotaState::Unknown | QuotaState::Syncing | QuotaState::Unavailable(_)
+            ) {
+                state = match &account.quota {
+                    QuotaState::Known(q) | QuotaState::Stale(q) => QuotaState::Stale(q.clone()),
+                    QuotaState::Unlimited { observed_at }
+                    | QuotaState::StaleUnlimited { observed_at } => QuotaState::StaleUnlimited {
+                        observed_at: *observed_at,
+                    },
+                    _ => state,
+                };
             }
             if matches!(state, QuotaState::LoggedOut) {
                 account.extra_quota = ExtraQuotaState::Unknown;

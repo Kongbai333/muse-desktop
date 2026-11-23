@@ -8,11 +8,17 @@ fn reset_label(at: Option<u64>) -> String {
         .unwrap_or_else(|| "重置时间待同步".into())
 }
 fn used_percent(quota: &muse_core::QuotaState) -> Option<f64> {
-    quota.remaining_ratio().map(|r| (1. - r) * 100.)
+    match quota {
+        muse_core::QuotaState::Stale(q) => {
+            muse_core::QuotaState::Known(q.clone()).remaining_ratio()
+        }
+        q => q.remaining_ratio(),
+    }
+    .map(|r| (1. - r) * 100.)
 }
 fn extra_pill(state: &muse_core::ExtraQuotaState) -> String {
     match state {
-        muse_core::ExtraQuotaState::Known(value) => {
+        muse_core::ExtraQuotaState::Known(value) | muse_core::ExtraQuotaState::Stale(value) => {
             let text = value
                 .label()
                 .replace("已使用 ", "")
@@ -22,7 +28,6 @@ fn extra_pill(state: &muse_core::ExtraQuotaState) -> String {
                 .replace("个口令", "");
             format!("额外 {text}")
         }
-        muse_core::ExtraQuotaState::Stale(_) => "额外需刷新".into(),
         _ => "额外待同步".into(),
     }
 }
@@ -30,11 +35,12 @@ fn extra_pill(state: &muse_core::ExtraQuotaState) -> String {
 const SEGMENTS: usize = 20;
 fn invite_value(state: &muse_core::ExtraQuotaState) -> String {
     match state {
-        muse_core::ExtraQuotaState::Known(_) => extra_pill(state)
-            .trim_start_matches("额外")
-            .trim()
-            .to_owned(),
-        muse_core::ExtraQuotaState::Stale(_) => "需刷新".into(),
+        muse_core::ExtraQuotaState::Known(_) | muse_core::ExtraQuotaState::Stale(_) => {
+            extra_pill(state)
+                .trim_start_matches("额外")
+                .trim()
+                .to_owned()
+        }
         _ => "待同步".into(),
     }
 }
@@ -96,14 +102,17 @@ impl MuseWindow {
         let used = used_percent(&account.quota);
         let exhausted = used.is_some_and(|value| value >= 99.5);
         let reset = match &account.quota {
-            muse_core::QuotaState::Known(value) => value.resets_at(),
+            muse_core::QuotaState::Known(value) | muse_core::QuotaState::Stale(value) => {
+                value.resets_at()
+            }
             _ => None,
         };
         let percent: String = match used {
             Some(_) if exhausted => "已用完".into(),
             Some(value) => format!("{value:.0}%"),
             None => match account.quota {
-                muse_core::QuotaState::Unlimited { .. } => "不限量",
+                muse_core::QuotaState::Unlimited { .. }
+                | muse_core::QuotaState::StaleUnlimited { .. } => "不限量",
                 muse_core::QuotaState::LoggedOut => "未登录",
                 muse_core::QuotaState::Stale(_) => "需刷新",
                 muse_core::QuotaState::Unavailable(_) => "同步失败",
@@ -229,15 +238,31 @@ impl MuseWindow {
                                                 .child("休眠"),
                                         )
                                     })
-                                    .when(self.cached_accounts.contains(&id), |element| {
-                                        element.child(
-                                            div()
-                                                .flex_none()
-                                                .text_size(px(10.))
-                                                .text_color(rgb(colors().muted))
-                                                .child("缓存"),
-                                        )
-                                    }),
+                                    .when(
+                                        self.cached_accounts.contains(&id)
+                                            || matches!(
+                                                account.quota,
+                                                muse_core::QuotaState::Stale(_)
+                                                    | muse_core::QuotaState::StaleUnlimited { .. }
+                                            ),
+                                        |element| {
+                                            element.child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_size(px(10.))
+                                                    .text_color(rgb(colors().muted))
+                                                    .child(
+                                                        if reset.is_some_and(|at| {
+                                                            at <= crate::page_observer::now_ms()
+                                                        }) {
+                                                            "旧周期"
+                                                        } else {
+                                                            "未更新"
+                                                        },
+                                                    ),
+                                            )
+                                        },
+                                    ),
                             )
                             .child(
                                 div()
@@ -425,7 +450,7 @@ impl MuseWindow {
                         .whitespace_nowrap()
                         .text_size(px(11.))
                         .text_color(rgb(colors().muted))
-                        .child("在 Muse 页面打开「邀请」后同步"),
+                        .child("等待页面提供邀请信息"),
                 );
         };
         let code = invite.code.clone();
@@ -436,7 +461,12 @@ impl MuseWindow {
         if let Some(remaining) = invite.remaining {
             counts.push(format!("剩 {remaining} 次"));
         }
-        let age = crate::page_observer::now_ms().saturating_sub(invite.observed_at) / 60_000;
+        let oldest_count = [invite.remaining_at, invite.redeemed_at, invite.earned_at]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(invite.observed_at);
+        let age = crate::page_observer::now_ms().saturating_sub(oldest_count) / 60_000;
         let synced = match age {
             0 => "刚刚同步".to_owned(),
             1..=59 => format!("{age} 分钟前同步"),
@@ -449,7 +479,7 @@ impl MuseWindow {
                 .map(|earned| format!("已赚取 {earned} 词元 · "))
                 .unwrap_or_default()
                 + &synced
-                + " · 每 30 分钟自动更新",
+                + " · 被动同步，未返回字段保留旧值",
         );
         row.child(
             div()
@@ -1115,7 +1145,7 @@ mod tests {
         assert!(
             (used_percent(&muse_core::QuotaState::Known(q.clone())).unwrap() - 9.).abs() < 0.001
         );
-        assert_eq!(used_percent(&muse_core::QuotaState::Stale(q)), None);
+        assert!((used_percent(&muse_core::QuotaState::Stale(q)).unwrap() - 9.).abs() < 0.001);
         assert_eq!(
             extra_pill(&muse_core::ExtraQuotaState::Unknown),
             "额外待同步"

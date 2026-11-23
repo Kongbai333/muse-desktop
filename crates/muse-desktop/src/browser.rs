@@ -1020,7 +1020,9 @@ impl BrowserPool {
             self.last_active.set(None);
             let status = match snapshot.quota_status.as_str() {
                 "ok" | "waiting" | "syncing" | "not_found" | "request_failed" | "logged_out"
-                | "unrecognized" | "unsupported" => snapshot.quota_status.clone(),
+                | "unrecognized" | "unsupported" | "auth_required" | "rate_limited" => {
+                    snapshot.quota_status.clone()
+                }
                 _ => "unknown".into(),
             };
             self.observations.insert(

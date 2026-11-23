@@ -27,7 +27,10 @@
       && !('subscription_type' in s) && !('usageRowLabel' in s) && !('usage_row_label' in s))) return null;
     const resets_at = resetTime(u.resetsAt ?? u.resets_at);
     const extra=parseExtra(s);
-    const attach=result=>({...result,plan_label:planLabel(s),...(extra?{extra}:{})});
+    const tier=s.tier?.name, type=s.subscriptionType ?? s.subscription_type;
+    const hasPlan=(typeof tier==='string' && tier.trim().length>0 && tier.length<=32 && !/[\u0000-\u001f]/.test(tier))
+      || (['FREE','PAID','COMPLIMENTARY'].includes(type) && !(s.subscriptionType!==undefined && s.subscription_type!==undefined && s.subscriptionType!==s.subscription_type));
+    const attach=result=>({...result,...(hasPlan ? {plan_label:planLabel(s)} : {}),...(extra?{extra}:{})});
     if (u.state === 'UNLIMITED') return attach({state:'unlimited',resets_at});
     const one = u.percentUsed, two = u.percent_used;
     if (one !== undefined && two !== undefined && one !== two) return null;
@@ -180,59 +183,58 @@
     }
     return null;
   }
-  const api = {parseSubscription,parseResponse,discoverAction,discoverPreload,trusted,contentReady,planLabel,captureAvatar,parseInvite};
+  function retryDelay(status, failures) {
+    if(status === 'logged_out' || status === 'auth_required')return Infinity;
+    if(status === 'rate_limited')return 300000;
+    if(status === 'ok')return 90000;
+    return failures < 2 ? 2000 : failures < 3 ? 10000 : 90000;
+  }
+  // Public module768390, 3ntat7dh_l-3h.js (2026-11-23). A model is
+  // evidence for parsing, not permission to call a reveal/create action.
+  function findInvite(node,depth=0){
+    if(!node || typeof node!=='object' || depth>5)return null;
+    if(['ELIGIBLE','EXHAUSTED','NOT_ELIGIBLE'].includes(String(node.invite_state).toUpperCase())
+      && typeof node.code==='string' && /^[A-Z0-9]{6,16}$/.test(node.code)
+      && ['max_uses','use_count','uses_remaining'].every(k=>k in node && (node[k]===null || (Number.isSafeInteger(node[k]) && node[k]>=0)))
+      && !(node.max_uses>0 && node.use_count>node.max_uses)){
+      // use_count counts uses; it is not the number of redeemed friends.
+      return {code:node.code,remaining:node.uses_remaining,redeemed:null,earned:null};
+    }
+    const values=Array.isArray(node)?node.slice(0,16):['invite','data','result','value'].filter(k=>k in node).map(k=>node[k]);
+    for(const value of values){const found=findInvite(value,depth+1);if(found)return found;}
+    return null;
+  }
+  function parseInviteResponse(text){
+    if(typeof text!=='string'||text.length>MAX_PAYLOAD)return null;
+    try{const found=findInvite(JSON.parse(text));if(found)return found;}catch{}
+    for(const line of text.split('\n').slice(0,100)){
+      if(!/^[0-9a-f]{1,8}:(\{|\[)/i.test(line))continue;
+      try{const found=findInvite(JSON.parse(line.slice(line.indexOf(':')+1)));if(found)return found;}catch{}
+    }
+    return null;
+  }
+  const api = {retryDelay,parseInviteResponse,parseSubscription,parseResponse,discoverAction,discoverPreload,trusted,contentReady,planLabel,captureAvatar,parseInvite};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (typeof window === 'undefined' || window !== window.top || window.__museDesktopObserver) return;
   const root=window;
   const nativeFetch=root.fetch.bind(root);
   let quota=null, action=null, busy=false, lastAttempt=0, scanned=0, lastCode='waiting';
+  let nextAttempt=0, failures=0, activeController=null;
   let sessionEpoch=0, wasLoggedOut=false, avatar=null, avatarChecked=0;
   let avatarRecording=null;
-  let invite=null, inviteChecked=0, inviteBusy=false, lastInput=0;
-  // Real user input on this page. Automatic invite reads wait until the page
-  // has been idle, so the popover never opens under someone's cursor or typing.
-  for (const type of ['pointerdown','keydown','wheel']) {
-    root.addEventListener(type,event=>{ if(event.isTrusted) lastInput=Date.now(); },true);
+  let invite=null, inviteChecked=0, inviteBusy=false;
+  function acceptInviteDom(found){
+    if(!found)return;
+    const same=invite && ['code','remaining','redeemed','earned'].every(k=>(invite[k]??null)===(found[k]??null));
+    if(!same)invite={...found,observed_at:Date.now()};
   }
-  function inviteTrigger(){
-    for(const el of Array.from(document.querySelectorAll('button,[role="button"],a')).slice(0,400)){
-      const text=(el.innerText||el.textContent||'').trim();
-      const label=(el.getAttribute('aria-label')||'').trim();
-      if((['邀请','Invite'].includes(text) || ['邀请','Invite'].includes(label)) && visible(root,el))return el;
-    }
-    return null;
-  }
-  const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-  // Opens the site's own invite popover, reads it and closes it again.
+  // Passive only: no synthetic click, focus change, hidden navigation or
+  // unverified server action. New read-only sources require source evidence.
   async function refreshInvite(){
     if(inviteBusy || !trusted(location.href) || wasLoggedOut || !contentReady(root))return 'skip';
-    if(Date.now()-lastInput<20000)return 'user_active';
-    const open=parseInvite(root);
-    if(open){invite={...open,observed_at:Date.now()};return 'ok';}
-    const trigger=inviteTrigger();
-    if(!trigger)return 'no_trigger';
-    inviteBusy=true;
-    const focused=document.activeElement;
-    let found=null;
-    try{
-      trigger.click();
-      for(let i=0;i<20 && !found;i++){await pause(150);found=parseInvite(root);}
-      if(found)invite={...found,observed_at:Date.now()};
-    }catch{}
-    finally{
-      try{
-        if(parseInvite(root) && document.contains(trigger))trigger.click();
-        await pause(250);
-        if(parseInvite(root)){
-          const target=document.activeElement||document.body;
-          target.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));
-        }
-        if(focused && focused!==document.body && document.contains(focused) && typeof focused.focus==='function')
-          focused.focus({preventScroll:true});
-      }catch{}
-      inviteBusy=false;
-    }
-    return found?'ok':'not_found';
+    const found=parseInvite(root);
+    if(found){acceptInviteDom(found);return 'ok';}
+    return 'not_available';
   }
   function stopAvatarRecording(discard=false) {
     if(avatarRecording?.timer != null)root.clearInterval(avatarRecording.timer);
@@ -323,10 +325,10 @@
     settingsLoaded=true;
   }
   async function refresh(force=false) {
-    if (!trusted(location.href) || busy || (!force && Date.now()-lastAttempt < 90000)) return;
+    if (!trusted(location.href) || busy || (Date.now()<nextAttempt && !(force && lastCode==='auth_required' && Date.now()-lastAttempt>=30000)) || (!force && Date.now()-lastAttempt < 90000 && failures === 0)) return;
     busy=true; lastAttempt=Date.now(); lastCode='syncing';
     const epoch=sessionEpoch;
-    const controller=new AbortController();
+    const controller=new AbortController(); activeController=controller;
     const timer=setTimeout(()=>controller.abort(),20000);
     try {
       if (!action) action=await discover(controller.signal);
@@ -334,6 +336,7 @@
         await loadObservedSettings(controller.signal);
         action=await discover(controller.signal);
       }
+      if(epoch !== sessionEpoch || wasLoggedOut)return;
       if (!action) { lastCode='not_found'; return; }
       const response=await nativeFetch(location.href,{
         method:'POST',credentials:'same-origin',signal:controller.signal,
@@ -341,11 +344,21 @@
         body:'[{"includeAgreement":true}]',
       });
       if (epoch !== sessionEpoch || wasLoggedOut) return;
-      if (response.status === 401 || response.status === 403) { quota=null; lastCode='logged_out'; return; }
-      if (!response.ok) { lastCode='request_failed'; return; }
+      if (response.status === 401 || response.status === 403) { lastCode='auth_required'; return; }
+      if (!response.ok) { lastCode=response.status===429?'rate_limited':'request_failed'; return; }
       if (!accept(await boundedText(response),epoch) && epoch === sessionEpoch) lastCode='unrecognized';
-    } catch { lastCode='request_failed'; }
-    finally { clearTimeout(timer); busy=false; }
+    } catch { if(epoch===sessionEpoch && !wasLoggedOut)lastCode='request_failed'; }
+    finally {
+      clearTimeout(timer);
+      if(epoch===sessionEpoch){
+        busy=false; activeController=null;
+        failures=lastCode==='ok'?0:Math.min(failures+1,3);
+        nextAttempt=Date.now()+(lastCode==='ok'?2000:retryDelay(lastCode,failures));
+        // Discovery may have raced lazy loading. Retry cached static assets in
+        // the next bounded cycle, never force on every native poll.
+        if(!action && failures===3)seenScripts.clear();
+      }
+    }
   }
   if (trusted(location.href)) {
     root.fetch=function(...args) {
@@ -355,6 +368,19 @@
         const input=args[0];
         const url=new URL(typeof input === 'string' ? input : input.url,location.href);
         const headers=new Headers(args[1]?.headers || (input && input.headers) || {});
+        // Observe only responses the site itself already requested. No new
+        // request, click, code reveal, redemption or resource consumption.
+        const method=String(args[1]?.method || input?.method || 'GET').toUpperCase();
+        if(url.origin===location.origin && (method==='GET' || headers.has('Next-Action'))){
+          pending.then(response=>{
+            const type=response.headers.get('content-type')||'';
+            if(!response.ok || !/json|text\/x-component/.test(type))return;
+            return boundedText(response.clone()).then(text=>{
+              if(epoch!==sessionEpoch || wasLoggedOut || !trusted(location.href))return;
+              const found=parseInviteResponse(text);if(found)invite={...found,observed_at:Date.now()};
+            });
+          }).catch(()=>{});
+        }
         if (url.origin === location.origin && (/\/api\/(?:subscription|usage|billing)(?:\/|$)/.test(url.pathname)
           || (action && headers.get('Next-Action') === action))) {
           pending.then(response => boundedText(response.clone()).then(text=>accept(text,epoch))).catch(()=>{});
@@ -371,22 +397,25 @@
     snapshot(force=false, showAvatar=true) {
       const ready=contentReady(root);
       const allowed=trusted(location.href);
-      let loggedOut=false;
+      let loggedOut=false, authBlocked=false;
       if (allowed) {
-        loggedOut=/\/(?:login|signin|sign-in)(?:\/|$)/i.test(location.pathname)
+        loggedOut=/\/(?:login|signin|sign-in)(?:\/|$)/i.test(location.pathname);
+        authBlocked=loggedOut
           || Array.from(document.querySelectorAll('input[type="' + String.fromCharCode(112,97,115,115,119,111,114,100) + '"]')).some(el=>visible(root,el));
-        if (loggedOut && !wasLoggedOut) { sessionEpoch++; quota=null;avatar=null;invite=null;stopAvatarRecording(true); lastCode='logged_out'; }
-        if (!loggedOut && wasLoggedOut) { lastAttempt=0; }
-        wasLoggedOut=loggedOut;
+        // A credential dialog can be re-authentication/settings, not logout.
+        // Invalidate pending requests, but let the host retain its stale cache.
+        if (authBlocked && !wasLoggedOut) { sessionEpoch++;activeController?.abort();activeController=null;busy=false; quota=null;avatar=null;invite=null;stopAvatarRecording(true); lastCode=loggedOut?'logged_out':'auth_required'; }
+        if (!authBlocked && wasLoggedOut) { lastAttempt=0;nextAttempt=0;failures=0; }
+        wasLoggedOut=authBlocked;
         if(force && showAvatar)stopAvatarRecording(true);
-        if (!loggedOut && ready) void refresh(force);
-        if(showAvatar && !loggedOut && ready && (!avatar || force || Date.now()-avatarChecked>30000)){
+        if (!authBlocked && ready) void refresh(force);
+        if(showAvatar && !authBlocked && ready && (!avatar || force || Date.now()-avatarChecked>30000)){
           avatarChecked=Date.now();avatar=captureAvatar(root) || avatar;
         }
-        if(showAvatar && !loggedOut && ready)recordAvatar();
-        if(!loggedOut && ready && !inviteBusy && Date.now()-inviteChecked>1000){
+        if(showAvatar && !authBlocked && ready)recordAvatar();
+        if(!authBlocked && ready && !inviteBusy && Date.now()-inviteChecked>1000){
           inviteChecked=Date.now();
-          try{const found=parseInvite(root);if(found)invite={...found,observed_at:Date.now()};}catch{}
+          try{acceptInviteDom(parseInvite(root));}catch{}
         }
       }
       if(!allowed)stopAvatarRecording(true);
@@ -398,7 +427,7 @@
         avatar_png:showAvatar && allowed && !loggedOut?avatar:null,plan_label:allowed && quota?quota.plan_label:null,
         avatar_animation:animation,
         invite:allowed && !loggedOut ? invite : null,
-        quota_status:!allowed ? 'unsupported' : loggedOut ? 'logged_out' : lastCode,
+        quota_status:!allowed ? 'unsupported' : loggedOut ? 'logged_out' : authBlocked ? 'auth_required' : lastCode,
         action_found:!!action,scripts_scanned:scanned,
         preload_found:preload !== null,settings_loaded:settingsLoaded,
         style_waiting:Array.from(document.querySelectorAll('link[rel~="stylesheet"]')).filter(l=>!l.disabled && l.sheet===null).length,

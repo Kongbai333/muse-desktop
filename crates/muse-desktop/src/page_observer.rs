@@ -78,6 +78,9 @@ impl InvitePayload {
                 redeemed: count(self.redeemed),
                 earned,
                 observed_at: self.observed_at,
+                remaining_at: count(self.remaining).map(|_| self.observed_at),
+                redeemed_at: count(self.redeemed).map(|_| self.observed_at),
+                earned_at: self.earned.as_ref().map(|_| self.observed_at),
             },
         )
     }
