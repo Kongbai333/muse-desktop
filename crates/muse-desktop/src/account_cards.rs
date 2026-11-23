@@ -1022,7 +1022,11 @@ impl MuseWindow {
                             .cursor_pointer()
                             .flex()
                             .items_center()
+                            .gap_3()
                             .text_size(px(12.))
+                            .text_color(rgb(tone(0x3F3F46, 0xD4D4DC)))
+                            .hover(|s| s.bg(rgb(tone(0xF4F5F5, 0x2B2B31))))
+                            .child(glyph("download", 15., tone(0x7E7F86, 0xAAAAB5)))
                             .child("导出账号与静态代理")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if accepts_action(this) {
@@ -1040,7 +1044,11 @@ impl MuseWindow {
                             .cursor_pointer()
                             .flex()
                             .items_center()
+                            .gap_3()
                             .text_size(px(12.))
+                            .text_color(rgb(tone(0x3F3F46, 0xD4D4DC)))
+                            .hover(|s| s.bg(rgb(tone(0xF4F5F5, 0x2B2B31))))
+                            .child(glyph("folder", 15., tone(0x7E7F86, 0xAAAAB5)))
                             .child("导入加密账号包")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if accepts_action(this) {
