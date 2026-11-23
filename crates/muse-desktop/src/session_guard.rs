@@ -70,6 +70,7 @@ pub struct PageGate {
     started: u64,
     first_content: Option<u64>,
     failed: bool,
+    readiness_timeout: bool,
     native_failure_status: Option<i32>,
     latest_native_navigation: Option<u64>,
 }
@@ -80,6 +81,7 @@ impl PageGate {
         self.first_content = None;
         self.started = now;
         self.failed = false;
+        self.readiness_timeout = false;
         self.native_failure_status = None;
         self.epoch
     }
@@ -88,6 +90,12 @@ impl PageGate {
     }
     pub fn ready(&self) -> bool {
         self.ready
+    }
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
+    pub fn readiness_timed_out(&self) -> bool {
+        self.readiness_timeout
     }
     pub fn observe(&mut self, epoch: u64, content: bool, now: u64) -> bool {
         if epoch != self.epoch || self.failed {
@@ -109,6 +117,7 @@ impl PageGate {
             && self.epoch > 0
             && now.saturating_sub(self.started) >= 25_000
         {
+            self.readiness_timeout = true;
             self.fail();
             return true;
         }
@@ -132,7 +141,7 @@ impl PageGate {
         true
     }
     pub fn diagnostics(&self, now: u64) -> serde_json::Value {
-        serde_json::json!({"epoch":self.epoch,"ready":self.ready,"failed":self.failed,"content_seen":self.first_content.is_some(),"elapsed_ms":now.saturating_sub(self.started),"native_failure_status":self.native_failure_status})
+        serde_json::json!({"epoch":self.epoch,"ready":self.ready,"failed":self.failed,"readiness_timeout":self.readiness_timeout,"content_seen":self.first_content.is_some(),"elapsed_ms":now.saturating_sub(self.started),"native_failure_status":self.native_failure_status})
     }
 }
 
@@ -252,12 +261,29 @@ mod tests {
         assert!(gate.observe(epoch, false, 2000));
         assert!(!gate.timed_out(5000));
         assert!(gate.timed_out(26000));
+        assert!(gate.failed());
+        assert!(gate.readiness_timed_out());
         assert!(!gate.observe(epoch, true, 27000));
         assert!(!gate.ready());
         let retry = gate.navigate(30000);
+        assert!(!gate.failed());
+        assert!(!gate.readiness_timed_out());
+        assert!(!gate.observe(epoch, true, 30050));
         assert!(gate.observe(retry, true, 30100));
+        assert!(gate.observe(retry, true, 30200));
+        assert!(gate.ready());
         gate.fail();
         assert!(!gate.observe(retry, true, 31000));
         assert!(!gate.ready());
+    }
+
+    #[test]
+    fn native_proxy_auth_failure_is_not_a_readiness_timeout() {
+        let mut gate = PageGate::default();
+        gate.navigate(1000);
+        gate.native_navigation_started(1);
+        assert!(gate.fail_navigation(1, 18));
+        assert!(gate.failed());
+        assert!(!gate.readiness_timed_out());
     }
 }

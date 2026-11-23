@@ -869,7 +869,21 @@ impl BrowserPool {
     }
 
     pub fn startup_error(&self, identity: BrowserIdentity) -> Option<&str> {
-        self.failures.get(&identity).map(String::as_str)
+        self.failures
+            .get(&identity)
+            .map(String::as_str)
+            .or_else(|| {
+                self.tabs
+                    .get(&identity.tab_id)
+                    .filter(|tab| tab.identity == identity)
+                    .and_then(|tab| {
+                        tab.gate
+                            .lock()
+                            .unwrap()
+                            .readiness_timed_out()
+                            .then_some("页面暂未就绪，请重试或检查代理连接")
+                    })
+            })
     }
 
     pub fn profile_verified(&self, id: muse_core::AccountId) -> bool {
@@ -888,6 +902,26 @@ impl BrowserPool {
                     .diagnostics(page_observer::now_ms())
             })
             .unwrap_or(serde_json::Value::Null)
+    }
+    /// Exercise the real timeout/reload path only inside the existing proxy fixture.
+    pub fn exercise_readiness_timeout(&mut self, identity: BrowserIdentity) -> bool {
+        if !std::env::args().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "--proxy-smoke-test" | "--proxy-edit-smoke-test"
+            )
+        }) {
+            return false;
+        }
+        let Some(tab) = self.tabs.get(&identity.tab_id) else {
+            return false;
+        };
+        tab.gate
+            .lock()
+            .unwrap()
+            .navigate(page_observer::now_ms().saturating_sub(25_001));
+        self.poll_page(identity);
+        self.readiness_diagnostics(identity)["failed"] == true
     }
     pub fn visible_views_ready(&self) -> bool {
         self.tabs.values().all(|tab| {
@@ -919,19 +953,17 @@ impl BrowserPool {
             return;
         };
         let now = page_observer::now_ms();
-        let (epoch, ready) = {
+        let (epoch, ready, failed) = {
             let mut gate = tab.gate.lock().unwrap();
             if gate.timed_out(now) {
-                self.failures
-                    .insert(identity, "页面暂未就绪，请重试或检查代理连接".into());
                 let _ = self.sender.send(BrowserMessage::State(
                     identity,
                     BrowserEvent::Error("页面就绪检查超时".into()),
                 ));
             }
-            (gate.epoch(), gate.ready())
+            (gate.epoch(), gate.ready(), gate.failed())
         };
-        if self.failures.contains_key(&identity) {
+        if failed || self.failures.contains_key(&identity) {
             return;
         }
         if let Some((pending_epoch, at)) = tab.pending_probe.get() {
@@ -1162,7 +1194,7 @@ impl BrowserPool {
             let staging = (Some(tab.identity) == active || self.background.contains(&tab.identity))
                 && !visible
                 && !cookie_reader
-                && !self.failures.contains_key(&tab.identity);
+                && self.startup_error(tab.identity).is_none();
             let shown = visible || staging;
             if shown {
                 wake(tab);

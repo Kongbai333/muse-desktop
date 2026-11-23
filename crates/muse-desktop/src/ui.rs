@@ -1593,6 +1593,27 @@ impl MuseWindow {
         match smoke.stage {
             0 if self.markers.contains_key(&smoke.first) && ready => {
                 smoke.first_marker = self.markers.get(&smoke.first).cloned();
+                if crate::proxy_smoke::authenticated_requests().is_some() {
+                    let identity = self.workspace.active_browser_identity().unwrap();
+                    if !self.browsers.exercise_readiness_timeout(identity) {
+                        let report = serde_json::json!({"passed":false,"error":"readiness timeout fixture did not fail closed"});
+                        let _ = std::fs::write(
+                            self.data_dir.join("smoke-result.json"),
+                            report.to_string(),
+                        );
+                        cx.quit();
+                        return;
+                    }
+                    self.command("reload", window, cx);
+                    smoke.stage = 20;
+                } else {
+                    if let Some(view) = self.browsers.view(smoke.original_tab) {
+                        let _ = view.load_url(&format!("{}next", self.home));
+                    }
+                    smoke.stage = 1;
+                }
+            }
+            20 if ready => {
                 if let Some(view) = self.browsers.view(smoke.original_tab) {
                     let _ = view.load_url(&format!("{}next", self.home));
                 }
@@ -1749,6 +1770,9 @@ impl MuseWindow {
                         .is_some_and(|id| self.browsers.active_render_ready(id));
                 let render_check_passed = cfg!(target_os = "macos") || pixels_visible == Some(true);
                 let mut report = serde_json::json!({"passed":preserved && unknown && shared && follows_panels && hides_on_workspace && proxy_ok && render_check_passed && profile_verified && readiness_verified,"actual_profile_bindings_verified":profile_verified,"visible_views_passed_readiness":readiness_verified,"webview_pixels_visible":pixels_visible,"navigation_back":true,"navigation_forward":true,"independent_account_storage":true,"same_account_tabs_share_storage":shared,"opener_page_preserved":preserved,"quota_unknown_without_provider":unknown,"webview_follows_sidebar_and_inspector":follows_panels,"webview_hides_on_native_workspace":hides_on_workspace,"native_authenticated_upstream_requests":proxy_requests,"accounts":self.workspace.accounts.len()});
+                if proxy_requests.is_some() {
+                    report["readiness_timeout_reload_recovered"] = serde_json::json!(true);
+                }
                 if std::env::args().any(|arg| arg == "--cookie-import-smoke-test") {
                     report["cookie_import_proxy_requests_before"] =
                         serde_json::json!(crate::proxy_smoke::authenticated_requests());
