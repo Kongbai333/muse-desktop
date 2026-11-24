@@ -54,7 +54,7 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Browser adapter contracts
         run: |
-          node --test scripts/check-observer.cjs tests/diagnostics-marker.test.cjs
+          node --test scripts/check-observer.cjs tests/diagnostics-marker.test.cjs tests/browser-fingerprint.test.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check-studio.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -120,7 +120,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_macos_package.py
       - name: Browser adapter contracts
         run: |
-          node --test scripts/check-observer.cjs tests/diagnostics-marker.test.cjs
+          node --test scripts/check-observer.cjs tests/diagnostics-marker.test.cjs tests/browser-fingerprint.test.cjs
           node scripts/check-studio.cjs
           node scripts/check-original-media.cjs
           node scripts/check-reference-upload.cjs

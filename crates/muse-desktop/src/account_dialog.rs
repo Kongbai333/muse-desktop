@@ -39,6 +39,7 @@ pub(super) struct AccountDialog {
     enabled: bool,
     protocol: ProxyProtocol,
     force: bool,
+    fingerprint: muse_core::FingerprintMode,
     reveal: bool,
     message: String,
     /// Shown as the name placeholder and used when the name is left empty.
@@ -112,6 +113,7 @@ impl AccountDialog {
             enabled: draft.enabled,
             protocol: draft.protocol,
             force: draft.force_proxy,
+            fingerprint: muse_core::FingerprintMode::Basic,
             reveal: false,
             message: String::new(),
             default_name: String::new(),
@@ -298,6 +300,7 @@ impl MuseWindow {
             dialog.set_default_name(format!("账号 {}", self.workspace.accounts.len() + 1), cx);
         }
         if let Some(account) = owner.and_then(|id| self.workspace.account(id)) {
+            dialog.fingerprint = account.fingerprint;
             dialog.force = account.network == muse_core::AccountNetwork::Direct
                 || account.network.force_proxy();
             dialog.route = RouteChoice::from(account.network);
@@ -410,7 +413,7 @@ impl MuseWindow {
             self.save_pool_screen(screen, &name, window, cx);
             return;
         }
-        let (route, force) = (dialog.route, dialog.force);
+        let (route, force, fingerprint) = (dialog.route, dialog.force, dialog.fingerprint);
         if removing {
             let Some(id) = owner else {
                 return;
@@ -459,13 +462,14 @@ impl MuseWindow {
                 return;
             }
         }
-        match proxy_pool::save_account(
+        match proxy_pool::save_account_with_fingerprint(
             &self.data_dir,
             &mut self.workspace,
             owner,
             &name,
             route,
             force,
+            fingerprint,
         ) {
             Ok(saved) => {
                 if saved.browser_changed {
@@ -508,6 +512,12 @@ impl MuseWindow {
     ) -> Result<(), String> {
         let (mut candidate, saved) =
             proxy_pool::prepare_account(&self.data_dir, &self.workspace, None, name, route, force)?;
+        let mode = self
+            .account_dialog
+            .as_ref()
+            .map(|d| d.fingerprint)
+            .unwrap_or_default();
+        candidate.set_fingerprint_mode(saved.id, mode)?;
         let identity = candidate
             .active_browser_identity()
             .ok_or("无法准备新账号")?;
@@ -520,6 +530,7 @@ impl MuseWindow {
                 url: "about:blank",
                 profile: &profile,
                 network: account.network,
+                fingerprint: account.fingerprint,
                 proxy_credentials: candidate.proxy_credentials(account),
                 diagnostic_origin: self.diagnostic_origin.as_deref(),
             },
@@ -1276,7 +1287,7 @@ impl MuseWindow {
             None if dialog.removing => ("移除账号", "只从账号列表移除".into()),
             None if dialog.owner.is_some() => (
                 "编辑账号",
-                "改名不会重新加载网页；更换网络连接会重建该账号的浏览器，登录数据保留。".into(),
+                "改名不会重新加载网页；更换网络或指纹模式会重建浏览器，登录数据保留。".into(),
             ),
             None => (
                 "新增账号",
@@ -1438,6 +1449,28 @@ impl MuseWindow {
                     )
                         })
                         .child(self.render_dialog_network(dialog, cx))
+                        .child(
+                            div().flex().flex_col().gap_1()
+                                .child(checkbox_row(
+                                    "account-fingerprint", "基础指纹隔离（每账号固定）",
+                                    dialog.fingerprint == muse_core::FingerprintMode::Basic,
+                                    cx.listener(|this, _, _, cx| {
+                                        if let Some(d) = this.account_dialog.as_mut() {
+                                            d.fingerprint = match d.fingerprint {
+                                                muse_core::FingerprintMode::Basic => muse_core::FingerprintMode::Original,
+                                                muse_core::FingerprintMode::Original => muse_core::FingerprintMode::Basic,
+                                            };
+                                        }
+                                        cx.notify();
+                                    }),
+                                ))
+                                .child(div().text_size(px(11.)).line_height(px(17.))
+                                    .text_color(rgb(colors().secondary))
+                                    .child("隔离 Canvas / WebGL 的 sRGB 8位像素和 PNG 读取（≤4MP），同账号重启不变。"))
+                                .child(div().text_size(px(11.)).line_height(px(17.))
+                                    .text_color(rgb(colors().secondary))
+                                    .child("不覆盖后台 worker、字体、音频及网络指纹；可关闭以恢复原始读取。"))
+                        )
                 }
             };
         if !dialog.message.is_empty() && !matches!(dialog.screen, Some(PoolScreen::Edit(_))) {

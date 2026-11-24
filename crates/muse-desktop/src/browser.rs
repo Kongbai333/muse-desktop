@@ -56,6 +56,7 @@ pub struct BrowserRequest<'a> {
     pub url: &'a str,
     pub profile: &'a Path,
     pub network: AccountNetwork,
+    pub fingerprint: muse_core::FingerprintMode,
     pub proxy_credentials: Result<(AccountId, Option<uuid::Uuid>), String>,
     pub diagnostic_origin: Option<&'a str>,
 }
@@ -424,6 +425,7 @@ impl BrowserPool {
             url,
             profile,
             network,
+            fingerprint,
             proxy_credentials,
             diagnostic_origin,
         } = request;
@@ -571,6 +573,11 @@ impl BrowserPool {
                     _ => {}
                 }
             });
+        if let Some(script) =
+            crate::browser_fingerprint::initialization(identity.account_id, fingerprint)
+        {
+            builder = builder.with_initialization_script_for_main_only(script, false);
+        }
         #[cfg(target_os = "windows")]
         {
             builder = builder.with_theme(webview_theme(self.display.get().theme));

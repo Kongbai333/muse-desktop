@@ -207,6 +207,8 @@ pub struct Account {
     pub extra_quota: ExtraQuotaState,
     #[serde(default)]
     pub network: AccountNetwork,
+    #[serde(default)]
+    pub fingerprint: FingerprintMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,6 +217,15 @@ pub struct Account {
     pub legacy_proxy_migrated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer_origin: Option<TransferOrigin>,
+}
+
+/// Local browser readback policy; intentionally absent from the frozen transfer wire.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FingerprintMode {
+    #[default]
+    Basic,
+    Original,
 }
 
 /// Migration provenance only; AccountNetwork and the platform adapter remain authoritative.
@@ -341,6 +352,7 @@ impl Workspace {
             quota: QuotaState::Unknown,
             extra_quota: ExtraQuotaState::Unknown,
             network: AccountNetwork::Direct,
+            fingerprint: FingerprintMode::Basic,
             legacy_id: None,
             proxy_revision: None,
             legacy_proxy_migrated: false,
@@ -382,6 +394,21 @@ impl Workspace {
             tab.error = None;
         }
         Ok(())
+    }
+
+    pub fn set_fingerprint_mode(&mut self, id: AccountId, mode: FingerprintMode) -> Result<bool> {
+        let account = self.account(id).ok_or("账号不存在")?;
+        if account.fingerprint == mode {
+            return Ok(false);
+        }
+        let (network, revision) = (account.network, account.proxy_revision);
+        self.update_network(id, network, revision)?;
+        self.accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .unwrap()
+            .fingerprint = mode;
+        Ok(true)
     }
 
     pub fn register_legacy(

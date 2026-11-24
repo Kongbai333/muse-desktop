@@ -219,6 +219,7 @@ pub fn prepare_account(
     ))
 }
 
+#[cfg(test)]
 pub fn save_account(
     root: &Path,
     workspace: &mut Workspace,
@@ -238,9 +239,94 @@ fn commit(root: &Path, workspace: &mut Workspace, candidate: Workspace) -> Resul
     Ok(())
 }
 
+pub fn save_account_with_fingerprint(
+    root: &Path,
+    workspace: &mut Workspace,
+    owner: Option<AccountId>,
+    name: &str,
+    route: RouteChoice,
+    force_proxy: bool,
+    mode: muse_core::FingerprintMode,
+) -> Result<crate::account_settings::SavedAccount, String> {
+    let (mut candidate, mut saved) =
+        prepare_account(root, workspace, owner, name, route, force_proxy)?;
+    saved.browser_changed |= candidate.set_fingerprint_mode(saved.id, mode)?;
+    commit(root, workspace, candidate)?;
+    Ok(saved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fingerprint_save_rebuilds_only_on_change_and_keeps_the_profile() {
+        let (root, mut workspace) = fixture();
+        let id = workspace.add_account("before");
+        let old = workspace.active_browser_identity().unwrap();
+        let profile = workspace
+            .account(id)
+            .unwrap()
+            .profile_dir(&root.join("profiles"));
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(profile.join("synthetic-login-canary"), b"keep").unwrap();
+        let saved = save_account_with_fingerprint(
+            &root,
+            &mut workspace,
+            Some(id),
+            "after",
+            RouteChoice::System,
+            true,
+            muse_core::FingerprintMode::Original,
+        )
+        .unwrap();
+        assert!(saved.browser_changed);
+        assert!(!workspace.contains_identity(old));
+        let loaded = Workspace::load(&root.join("workspace.json")).unwrap();
+        assert_eq!(
+            loaded.account(id).unwrap().fingerprint,
+            muse_core::FingerprintMode::Original
+        );
+        assert_eq!(
+            std::fs::read(profile.join("synthetic-login-canary")).unwrap(),
+            b"keep"
+        );
+        let stable = workspace.active_browser_identity().unwrap();
+        let renamed = save_account_with_fingerprint(
+            &root,
+            &mut workspace,
+            Some(id),
+            "rename only",
+            RouteChoice::System,
+            true,
+            muse_core::FingerprintMode::Original,
+        )
+        .unwrap();
+        assert!(!renamed.browser_changed);
+        assert!(workspace.contains_identity(stable));
+    }
+
+    #[test]
+    fn fingerprint_save_failure_does_not_publish_the_name_or_mode() {
+        let (root, mut workspace) = fixture();
+        let id = workspace.add_account("before");
+        let before = workspace.to_json().unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join("workspace.json")).unwrap();
+        assert!(
+            save_account_with_fingerprint(
+                &root,
+                &mut workspace,
+                Some(id),
+                "after",
+                RouteChoice::System,
+                false,
+                muse_core::FingerprintMode::Original
+            )
+            .is_err()
+        );
+        assert_eq!(workspace.to_json().unwrap(), before);
+    }
 
     #[test]
     fn preparing_an_import_keeps_existing_accounts_and_the_saved_workspace_unchanged() {
