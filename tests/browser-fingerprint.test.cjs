@@ -30,8 +30,8 @@ function environment(key = [1, 2, 3, 4, 5, 6, 7, 8], origin = 'https://synthetic
     toBlob(callback) { callback(this.toDataURL()); }
   }
   class GL {
-    constructor(canvas) { this.canvas = canvas; this.RGBA = 0x1908; this.UNSIGNED_BYTE = 0x1401; this.FRAMEBUFFER = 0x8d40; this.FRAMEBUFFER_COMPLETE = 0x8cd5; this.PACK_ALIGNMENT = 0xd05; this.packing = 4; }
-    getParameter(name) { return name === this.PACK_ALIGNMENT ? this.packing : 0; }
+    constructor(canvas) { this.canvas = canvas; this.RGBA = 0x1908; this.UNSIGNED_BYTE = 0x1401; this.FRAMEBUFFER = 0x8d40; this.FRAMEBUFFER_BINDING = 0x8ca6; this.FRAMEBUFFER_COMPLETE = 0x8cd5; this.PACK_ALIGNMENT = 0xd05; this.packing = 4; this.boundFramebuffer = null; }
+    getParameter(name) { if (name === this.FRAMEBUFFER_BINDING) return this.boundFramebuffer; return name === this.PACK_ALIGNMENT ? this.packing : 0; }
     checkFramebufferStatus() { return this.FRAMEBUFFER_COMPLETE; }
     isContextLost() { return false; }
     readPixels(x, y, w, h, format, type, data) {
@@ -99,4 +99,30 @@ test('unsupported pixel types and display-p3 do not get silently re-encoded as s
   const gl = new e.GL(e.painted()), data = new Uint8Array(32 * 32 * 4).fill(17);
   gl.readPixels(0, 0, 32, 32, 0, gl.UNSIGNED_BYTE, data);
   assert(data.every(x => x === 17));
+});
+
+test('failed complete custom WebGL2 reads preserve the opaque destination and pending errors', () => {
+  class GL2 {
+    constructor() { this.canvas = { width: 16, height: 16 }; this.READ_FRAMEBUFFER = 0x8ca8; this.READ_FRAMEBUFFER_BINDING = 0x8caa; this.PACK_ALIGNMENT = 0xd05; this.calls = 0; this.errors = [0x500]; }
+    getParameter(p) { if (p === this.READ_FRAMEBUFFER_BINDING) return this; return p === this.PACK_ALIGNMENT ? 4 : 0; }
+    checkFramebufferStatus() { return 0x8cd5; }
+    isContextLost() { return false; }
+    readPixels() { this.calls++; this.errors.push(0x502); }
+    getError() { return this.errors.shift() || 0; }
+  }
+  vm.runInNewContext(template.replace('__MUSE_FINGERPRINT_SEED__', '[1,2,3,4,5,6,7,8]'), {
+    WebGL2RenderingContext: GL2, Uint8Array, Uint8ClampedArray, ArrayBuffer, origin: 'https://synthetic.example'
+  });
+  const gl = new GL2(), output = new Uint8Array(16 * 16 * 4).fill(255);
+  gl.readPixels(0, 0, 16, 16, 0x1908, 0x1401, output);
+  assert.equal(gl.calls, 1);
+  assert(output.every(value => value === 255), 'a failed native read must not change any caller byte');
+  assert.deepEqual(gl.errors, [0x500, 0x502], 'the adapter must not consume existing or new GL errors');
+});
+
+test('valid custom framebuffer readback remains native', () => {
+  const e = environment(), c = e.painted(), gl = new e.GL(c), output = new Uint8Array(c.pixels.length);
+  gl.boundFramebuffer = {};
+  gl.readPixels(0, 0, 32, 32, gl.RGBA, gl.UNSIGNED_BYTE, output);
+  assert.deepEqual(Array.from(output), Array.from(c.pixels));
 });

@@ -1466,10 +1466,10 @@ impl MuseWindow {
                                 ))
                                 .child(div().text_size(px(11.)).line_height(px(17.))
                                     .text_color(rgb(colors().secondary))
-                                    .child("隔离 Canvas / WebGL 的 sRGB 8位像素和 PNG 读取（≤4MP），同账号重启不变。"))
+                                    .child("Canvas 与 WebGL 默认帧缓冲：sRGB 8位像素 / PNG（≤4MP）。"))
                                 .child(div().text_size(px(11.)).line_height(px(17.))
                                     .text_color(rgb(colors().secondary))
-                                    .child("不覆盖后台 worker、字体、音频及网络指纹；可关闭以恢复原始读取。"))
+                                    .child("不覆盖自定义帧缓冲、worker、字体、音频及网络指纹。"))
                         )
                 }
             };

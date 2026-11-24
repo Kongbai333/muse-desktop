@@ -108,6 +108,10 @@
         (this.drawingBufferColorSpace && this.drawingBufferColorSpace !== 'srgb') ||
         (this.isContextLost && this.isContextLost()) ||
         apply(status, this, [this.READ_FRAMEBUFFER || 0x8d40]) !== 0x8cd5) return result;
+      // Complete user FBOs can still reject reads (multisample/integer attachments).
+      // Restrict adaptation to the default buffer without consuming any GL errors.
+      const binding = this.READ_FRAMEBUFFER_BINDING ?? this.FRAMEBUFFER_BINDING ?? 0x8ca6;
+      if (apply(parameter, this, [binding]) !== null) return result;
       if ((w * 4) % apply(parameter, this, [this.PACK_ALIGNMENT || 0xd05]) !== 0) return result;
       // PBO/non-default WebGL2 packing is deliberately left native.
       if (this.PIXEL_PACK_BUFFER_BINDING !== undefined &&

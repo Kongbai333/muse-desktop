@@ -23,6 +23,7 @@
 - 同账号重建/跨标签：固定种子，不引用tab/generation，跨账号不同。
 - 原生Canvas错误、透明/越界/大尺寸：保留原生安全边界和可用性。
 - 图像导出和读取：一致坐标扰动，不二次扰动，不修改绘制缓冲。
+- 自定义WebGL帧缓冲：失败或成功都保留原生输出及错误状态，不读取getError。
 - 账号设置失败/取消：模式与其余字段原子提交；不丢登录数据。
 
 ---
@@ -43,7 +44,7 @@ Files: desktop/src/browser_fingerprint.js、tests/browser-fingerprint.test.cjs�
 
 Interfaces: JS仅接受8个u32的派生种子；Basic返回初始化脚本，Original无脚本；不暴露全局seed对象。
 
-- [ ] 写定向JS RED：读值稳定/跨账号不同、像素不变、export与read一致、透明和异常、RGBA8/WebGL packing边界。
+- [ ] 写定向JS RED：读值稳定/跨账号不同、像素不变、export与read一致、透明和异常、默认帧缓冲RGBA8/WebGL packing边界；隐藏原生GL2探针确认多采样/整数附件失败读回不改目标数组，错误状态保留。
 - [ ] 实现稀疏确定扰动与有限克隆导出，并在Wry全frame初始化入口接入。
 - [ ] 用真实隐藏WebView/合成profile检查上述主要读回与iframe、重建；不以mock替代原生。
 
