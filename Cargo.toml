@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 rust-version = "1.95"
-version = "0.1.4-rc.1"
+version = "0.1.4"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
