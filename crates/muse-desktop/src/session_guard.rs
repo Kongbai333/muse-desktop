@@ -3,35 +3,9 @@
 use muse_core::AccountId;
 use std::{collections::HashMap, path::Path};
 
-pub fn native_store_namespace(account: AccountId, profile: &Path) -> Result<AccountId, String> {
-    let profile = std::fs::canonicalize(profile).map_err(|_| "无法定位账号数据目录")?;
-    Ok(uuid::Uuid::new_v5(
-        &account,
-        profile.to_string_lossy().as_bytes(),
-    ))
-}
-
 #[derive(Default)]
 pub struct ProfileBindings(HashMap<AccountId, String>);
 impl ProfileBindings {
-    /// WKWebView owns persistent stores by UUID rather than a custom directory.
-    pub fn verify_namespace(
-        &mut self,
-        id: AccountId,
-        expected: AccountId,
-        actual: AccountId,
-    ) -> Result<(), String> {
-        if actual != expected
-            || self
-                .0
-                .iter()
-                .any(|(owner, value)| *owner != id && value == &actual.to_string())
-        {
-            return Err("浏览器数据存储与此账号不一致，已阻止加载".into());
-        }
-        self.0.insert(id, actual.to_string());
-        Ok(())
-    }
     pub fn verified(&self, id: AccountId) -> bool {
         self.0.contains_key(&id)
     }
@@ -180,39 +154,6 @@ mod tests {
         assert!(gate.observe(next, true, 600));
         assert!(gate.observe(next, true, 750));
         assert!(gate.ready());
-    }
-
-    #[test]
-    fn persistent_native_stores_reject_a_wrong_or_shared_account_namespace() {
-        let mut guard = ProfileBindings::default();
-        let first = uuid::Uuid::new_v4();
-        let second = uuid::Uuid::new_v4();
-        assert!(guard.verify_namespace(first, first, first).is_ok());
-        assert!(guard.verify_namespace(second, second, first).is_err());
-        assert!(guard.verify_namespace(second, first, first).is_err());
-        assert!(guard.verify_namespace(second, second, second).is_ok());
-    }
-
-    #[test]
-    fn native_store_namespaces_are_stable_but_separate_data_directories() {
-        let root = std::env::temp_dir().join(format!("muse-store-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("first")).unwrap();
-        std::fs::create_dir_all(root.join("second")).unwrap();
-        let account = uuid::Uuid::new_v4();
-        let first = native_store_namespace(account, &root.join("first")).unwrap();
-        assert_eq!(
-            first,
-            native_store_namespace(account, &root.join("first/.")).unwrap()
-        );
-        assert_ne!(
-            first,
-            native_store_namespace(account, &root.join("second")).unwrap()
-        );
-        assert_ne!(
-            first,
-            native_store_namespace(uuid::Uuid::new_v4(), &root.join("first")).unwrap()
-        );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

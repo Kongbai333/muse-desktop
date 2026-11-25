@@ -188,11 +188,6 @@ impl MotionPolicy {
         Self::from_setting(result.is_ok().then(|| enabled.as_bool()))
     }
 
-    #[cfg(target_os = "macos")]
-    pub fn system() -> Self {
-        Self::from_setting(Some(!crate::windows_host::reduce_motion()))
-    }
-
     pub fn duration(self, kind: MotionKind) -> Option<Duration> {
         self.enabled.then_some(match kind {
             MotionKind::Popover => POPOVER_DURATION,

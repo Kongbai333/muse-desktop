@@ -1,5 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+compile_error!("Muse Desktop currently supports Windows x64 only.");
+
 mod account_cache;
 mod account_settings;
 mod account_transfer;
@@ -19,12 +22,7 @@ mod proxy_batch;
 mod proxy_pool;
 mod proxy_settings;
 mod proxy_smoke;
-#[cfg(any(target_os = "macos", test))]
-mod secret_policy;
 #[cfg(target_os = "windows")]
-mod secrets;
-#[cfg(target_os = "macos")]
-#[path = "secrets_macos.rs"]
 mod secrets;
 mod session_guard;
 mod session_probe;
@@ -44,13 +42,7 @@ mod updater_install;
 mod window_state;
 #[cfg(target_os = "windows")]
 mod windows_caption;
-#[cfg(target_os = "macos")]
-#[path = "caption_macos.rs"]
-mod windows_caption;
 #[cfg(target_os = "windows")]
-mod windows_host;
-#[cfg(target_os = "macos")]
-#[path = "host_macos.rs"]
 mod windows_host;
 
 use gpui::{
@@ -268,8 +260,6 @@ fn main() {
                     }
                 });
             }
-            #[cfg(not(windows))]
-            let _ = opened;
             updater_install::record_startup(&arguments);
             if !update_background {
                 cx.activate(true);

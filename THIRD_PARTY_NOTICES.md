@@ -55,4 +55,4 @@ https://docs.github.com/en/rest/releases/releases#get-the-latest-release
 
 The updater's HTTPS source is the public Kongbai333/muse-desktop repository.
 A matching SHA256 protects download integrity; it is not an independent
-publisher signature. macOS packages remain ad-hoc signed and not notarized.
+publisher signature.

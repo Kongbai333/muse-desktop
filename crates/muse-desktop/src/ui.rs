@@ -1771,7 +1771,7 @@ impl MuseWindow {
                         .workspace
                         .active_browser_identity()
                         .is_some_and(|id| self.browsers.active_render_ready(id));
-                let render_check_passed = cfg!(target_os = "macos") || pixels_visible == Some(true);
+                let render_check_passed = pixels_visible == Some(true);
                 let mut report = serde_json::json!({"passed":preserved && unknown && shared && follows_panels && hides_on_workspace && proxy_ok && render_check_passed && profile_verified && readiness_verified,"actual_profile_bindings_verified":profile_verified,"visible_views_passed_readiness":readiness_verified,"webview_pixels_visible":pixels_visible,"navigation_back":true,"navigation_forward":true,"independent_account_storage":true,"same_account_tabs_share_storage":shared,"opener_page_preserved":preserved,"quota_unknown_without_provider":unknown,"webview_follows_sidebar_and_inspector":follows_panels,"webview_hides_on_native_workspace":hides_on_workspace,"native_authenticated_upstream_requests":proxy_requests,"accounts":self.workspace.accounts.len()});
                 if proxy_requests.is_some() {
                     report["readiness_timeout_reload_recovered"] = serde_json::json!(true);

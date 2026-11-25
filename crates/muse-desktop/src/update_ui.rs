@@ -25,8 +25,6 @@ enum Reply {
     Progress(u64, u64),
     Prepared(u64, Result<Prepared>),
     Helper(u64, Prepared, Result<crate::updater_install::LaunchOutcome>),
-    #[cfg(target_os = "macos")]
-    Handoff(u64, Prepared, Result<()>),
 }
 pub(super) struct UpdateUi {
     pub open: bool,
@@ -45,8 +43,6 @@ pub(super) struct UpdateUi {
     last_attempt: Option<Instant>,
     source: crate::updater_download::Source,
     notify_on_result: bool,
-    #[cfg(target_os = "macos")]
-    handoff_allowed: bool,
 }
 impl UpdateUi {
     pub fn new(root: &std::path::Path, automatic: bool) -> Self {
@@ -96,8 +92,6 @@ impl UpdateUi {
             last_attempt: None,
             source: crate::updater_download::Source::new(root, !automatic),
             notify_on_result: false,
-            #[cfg(target_os = "macos")]
-            handoff_allowed: false,
         }
     }
 }
@@ -266,8 +260,6 @@ impl MuseWindow {
                 | Reply::Progress(id, _)
                 | Reply::Prepared(id, _)
                 | Reply::Helper(id, ..) => *id,
-                #[cfg(target_os = "macos")]
-                Reply::Handoff(id, ..) => *id,
             };
             if id != self.updates.generation {
                 continue;
@@ -292,10 +284,6 @@ impl MuseWindow {
                 }
                 Reply::Progress(_, size) => self.updates.received = size,
                 Reply::Prepared(_, Ok(prepared)) => {
-                    #[cfg(target_os = "macos")]
-                    {
-                        self.updates.handoff_allowed = false;
-                    }
                     self.updates.received = prepared.update.size;
                     self.updates.phase = Phase::Ready;
                     self.updates.message =
@@ -303,10 +291,6 @@ impl MuseWindow {
                     self.updates.prepared = Some(prepared);
                 }
                 Reply::Helper(_, prepared, Err(error)) => {
-                    #[cfg(target_os = "macos")]
-                    {
-                        self.updates.handoff_allowed = false;
-                    }
                     self.updates.phase = Phase::Ready;
                     self.updates.message = error;
                     self.updates.prepared = Some(prepared);
@@ -330,32 +314,6 @@ impl MuseWindow {
                     self.updates.message = "最新状态未保存，已停止重启更新".into();
                     self.updates.prepared = Some(prepared);
                 }
-                #[cfg(target_os = "macos")]
-                Reply::Helper(
-                    _,
-                    prepared,
-                    Ok(crate::updater_install::LaunchOutcome::NeedsPermission),
-                ) => {
-                    self.updates.phase = Phase::Ready;
-                    self.updates.handoff_allowed = true;
-                    self.updates.message="Bundle、签名和实际数据目录检查通过，但安装位置不可写。可以在Finder中按系统权限提示交接安装。".into();
-                    self.updates.prepared = Some(prepared);
-                }
-                #[cfg(target_os = "macos")]
-                Reply::Handoff(_, mut prepared, result) => {
-                    self.updates.phase = Phase::Ready;
-                    self.updates.message = match result {
-                        Ok(()) => {
-                            prepared.keep = true;
-                            "Finder已定位通过复核的Muse.app。退出Muse后按系统权限提示替换应用，保留独立的数据目录。本包为ad-hoc签名，未公证。".into()
-                        }
-                        Err(error) => {
-                            self.updates.handoff_allowed = false;
-                            error
-                        }
-                    };
-                    self.updates.prepared = Some(prepared);
-                }
             }
             changed = true;
         }
@@ -369,31 +327,6 @@ impl MuseWindow {
             // Background notifications do not steal native keyboard focus.
         }
         changed
-    }
-    #[cfg(target_os = "macos")]
-    fn reveal_update(&mut self) {
-        if !self.updates.handoff_allowed || self.updates.phase != Phase::Ready {
-            return;
-        }
-        let Some(prepared) = self.updates.prepared.take() else {
-            return;
-        };
-        self.updates.phase = Phase::Launching;
-        self.updates.message = "正在重新核验Bundle、签名和实际数据目录…".into();
-        let sender = self.updates.sender.clone();
-        let id = self.updates.generation;
-        let data = self.data_dir.clone();
-        std::thread::spawn(move || {
-            let result = crate::updater_install::verify_handoff(&prepared, &data).and_then(|()| {
-                std::process::Command::new("/usr/bin/open")
-                    .arg("-R")
-                    .arg(&prepared.payload)
-                    .spawn()
-                    .map(|_| ())
-                    .map_err(|_| "无法打开Finder，请重试".into())
-            });
-            let _ = sender.send(Reply::Handoff(id, prepared, result));
-        });
     }
     pub(super) fn render_updates(&self, cx: &Context<Self>) -> Stateful<Div> {
         let d = &self.updates;
@@ -436,18 +369,6 @@ impl MuseWindow {
                     } else {
                         this.download_update(cx);
                     }
-                }),
-            ));
-        }
-        #[cfg(target_os = "macos")]
-        if d.phase == Phase::Ready && d.handoff_allowed {
-            actions = actions.child(chrome::text_button(
-                "update-finder",
-                "在Finder中安装",
-                false,
-                cx.listener(|this, _, _, cx| {
-                    this.reveal_update();
-                    cx.notify();
                 }),
             ));
         }
@@ -537,17 +458,7 @@ impl MuseWindow {
                             .line_height(px(20.))
                             .text_color(rgb(colors().secondary))
                             .child(d.message.clone()),
-                    )
-                    .when(cfg!(target_os = "macos"), |e| {
-                        e.child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(rgb(colors().muted))
-                                .child(
-                                    "macOS包为ad-hoc签名，未经过Apple公证。安装不会绕过系统权限。",
-                                ),
-                        )
-                    }),
+                    ),
             )
             .child(
                 div()

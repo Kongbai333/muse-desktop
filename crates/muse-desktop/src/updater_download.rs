@@ -262,16 +262,15 @@ pub fn extract_package(
     update: &Update,
     cancel: &AtomicBool,
 ) -> Result<PathBuf> {
+    if update.platform != "win-x64" {
+        return Err("暂不支持此架构更新".into());
+    }
     let mut zip = zip::ZipArchive::new(File::open(archive).map_err(|_| "无法读取更新包")?)
         .map_err(|_| "更新包格式无效")?;
     if zip.len() > 8192 {
         return Err("更新包文件数量异常".into());
     }
-    let prefix = if update.platform == "win-x64" {
-        format!("Muse-Desktop-{}-win-x64", update.version)
-    } else {
-        "Muse.app".into()
-    };
+    let prefix = format!("Muse-Desktop-{}-win-x64", update.version);
     let mut seen = HashSet::new();
     let mut total = 0_u64;
     for i in 0..zip.len() {
@@ -301,16 +300,10 @@ pub fn extract_package(
         {
             return Err("更新包解压体积异常".into());
         }
-        if relative.starts_with("__MACOSX") {
-            continue;
-        }
         let inside = relative
             .strip_prefix(&prefix)
             .map_err(|_| "更新包目录与平台不符")?;
-        if update.platform == "win-x64"
-            && !inside.as_os_str().is_empty()
-            && !windows_app_file(inside)
-        {
+        if !inside.as_os_str().is_empty() && !windows_app_file(inside) {
             return Err("更新包包含非应用文件".into());
         }
         let output = destination.join(relative);
@@ -334,26 +327,9 @@ pub fn extract_package(
             return Err("更新包文件长度不符".into());
         }
         file.sync_all().map_err(|_| "无法保存解压文件")?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(
-                &output,
-                fs::Permissions::from_mode(if entry.unix_mode().unwrap_or(0) & 0o111 != 0 {
-                    0o755
-                } else {
-                    0o644
-                }),
-            )
-            .map_err(|_| "无法设置应用权限")?;
-        }
     }
     let payload = destination.join(prefix);
-    let executable = if update.platform == "win-x64" {
-        payload.join("Muse.exe")
-    } else {
-        payload.join("Contents/MacOS/Muse")
-    };
+    let executable = payload.join("Muse.exe");
     if !executable.is_file() {
         return Err("更新包缺少应用程序".into());
     }
@@ -487,7 +463,7 @@ mod tests {
         ] {
             assert!(safe_path(p).is_err(), "{p}");
         }
-        assert!(safe_path("Muse.app/Contents/MacOS/Muse").is_ok());
+        assert!(safe_path("application/LICENSES/NOTICE").is_ok());
     }
     #[test]
     fn real_zip_extraction_rejects_links_traversal_bombs_and_unexpected_payloads() {

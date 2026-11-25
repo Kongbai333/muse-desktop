@@ -8,13 +8,7 @@ pub const MAX_PACKAGE: u64 = 512 * 1024 * 1024;
 pub type Result<T> = std::result::Result<T, String>;
 
 pub fn platform() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "win-x64"
-    } else if cfg!(target_arch = "aarch64") {
-        "macos-arm64"
-    } else {
-        "macos-x64"
-    }
+    "win-x64"
 }
 
 #[derive(Clone, Debug)]
@@ -59,15 +53,10 @@ pub fn select_release(json: &str, current: &str, platform: &str) -> Result<Optio
     if !version.pre.is_empty() || !version.build.is_empty() || version <= current {
         return Ok(None);
     }
-    if !matches!(platform, "win-x64" | "macos-arm64" | "macos-x64") {
+    if platform != "win-x64" {
         return Err("暂不支持此架构更新".into());
     }
-    let suffix = if platform == "win-x64" {
-        "zip"
-    } else {
-        "app.zip"
-    };
-    let name = format!("Muse-Desktop-{version}-{platform}.{suffix}");
+    let name = format!("Muse-Desktop-{version}-{platform}.zip");
     let asset = |name: &str| -> Result<&Asset> {
         let mut matches = release.assets.iter().filter(|a| a.name == name);
         let a = matches

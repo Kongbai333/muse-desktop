@@ -1,6 +1,6 @@
 # Muse Desktop
 
-面向 Muse.ai 的非官方多账号客户端，使用 Rust 和 GPUI 构建。Windows 使用 WebView2，macOS 使用 WKWebView。
+面向 Muse.ai 的非官方多账号客户端，使用 Rust、GPUI 和 WebView2 构建。当前仅支持 Windows 10/11 x64。
 
 ## 界面预览
 
@@ -23,8 +23,6 @@
 在本仓库的 **Releases** 页面下载 `Muse-Desktop-<版本>-win-x64.zip`，解压后运行 `Muse.exe`。
 需要 Windows 10/11 x64 和 Microsoft Edge WebView2 Evergreen Runtime，不需要安装 .NET。
 
-macOS 版要求 macOS 14 或更新版本：Apple 芯片选择 `macos-arm64.app.zip`，Intel 选择 `macos-x64.app.zip`。解压后将 `Muse.app` 放入「应用程序」。当前 Mac 包为临时签名的开发构建，尚未进行 Apple 开发者签名与公证。
-
 默认数据目录为 `%LOCALAPPDATA%\MuseDesktopNext`。已有用户可用
 `Muse.exe --data-dir "原数据目录"` 沿用账号和历史；升级时不要删除该目录。
 安装包不包含开发者的账号、Cookie、代理凭据或聊天数据。
@@ -32,8 +30,6 @@ macOS 版要求 macOS 14 或更新版本：Apple 芯片选择 `macos-arm64.app.z
 开发脚本默认使用项目下的 `.runtime/development`，诊断模式使用 `.runtime/diagnostics`，与上述默认目录不同。
 从开发版或旧启动器切换前，请核对原启动参数中的 `--data-dir`；退出相关实例、备份并确认版本兼容后再沿用原目录。
 不要覆盖现有账号目录或只复制 Cookie 数据库。
-
-macOS 的配置目录是 `~/Library/Application Support/MuseDesktopNext`；每个账号使用独立的 WebKit 持久化存储，代理凭据保存到登录钥匙串。Windows 的浏览器目录与 DPAPI 凭据不能直接复制为 Mac 登录环境；应使用下文的加密迁移入口，或在 Mac 上重新登录和配置代理。Mac 暂不提供 WebView2 的后台页面休眠能力。
 
 ## 批量导入代理
 
@@ -47,7 +43,7 @@ macOS 的配置目录是 `~/Library/Application Support/MuseDesktopNext`；每�
 
 当前覆盖主页面及 iframe 中的 Canvas 2D、WebGL 默认帧缓冲的 sRGB RGBA8 像素读取和 PNG 导出；画布上限 4MP。扰动只发生在受支持的读取结果中，不直接改页面的绘制缓冲；透明及半透明像素保留。自定义帧缓冲（包括完整的多采样或整数附件）、Display-P3、特殊像素类型、非默认 WebGL 打包等路径保留原生行为，不消费页面的 GL 错误状态。需要原始像素的绘图或导出任务可关闭此选项。
 
-这是覆盖范围明确的基础读取隔离：worker、音频、字体、系统/GPU 型号和 TLS/网络指纹未独立配置，不保证网站无法关联账号，也不改变代理出口。冻结 v1 迁移文件不携带此本地配置；导入的新本地账号重新派生指纹。此项已在 Windows 真实 WebView2 的合成环境验证，macOS 的实际覆盖需对应平台验证。
+这是覆盖范围明确的基础读取隔离：worker、音频、字体、系统/GPU 型号和 TLS/网络指纹未独立配置，不保证网站无法关联账号，也不改变代理出口。冻结 v1 迁移文件不携带此本地配置；导入的新本地账号重新派生指纹。此项已在 Windows 真实 WebView2 的合成环境验证。
 
 ## 导入 Cookie 登录
 
@@ -69,7 +65,7 @@ Cookie 输入默认掩码显示，取消或创建成功后清空，不写入账�
 
 系统网络、本机/局域网节点和不同平台的本机地址旁路规则需要在预览中确认。源端未知的 Cookie 属性会明确说明目标映射；原生浏览器若未保留有效期或安全属性，整批账号不会激活。成功写入不代表真实身份有效，网站仍可能要求重新登录。
 
-跨端文件采用共同冻结的 v1 协议，Windows Rust 与 Java/JCA 已完成双向合成文件互解，Windows 与 macOS 两种架构已有原生合成回归验证。文件互解、Cookie 读回和本地假代理验证均不等于真实账号跨设备登录、真实代理出口或实体设备验收；发布状态与构建结果请以对应版本的 Release/Actions 为准。
+跨端文件采用共同冻结的 v1 协议，Windows Rust 与 Java/JCA 已完成双向合成文件互解；协议保持跨端兼容，本桌面客户端当前仅提供 Windows x64。文件互解、Cookie 读回和本地假代理验证均不等于真实账号跨设备登录、真实代理出口或实体设备验收；发布状态与构建结果请以对应版本的 Release/Actions 为准。
 
 Windows 合成检查：`cargo test --workspace --locked`，构建 debug 程序后运行 `py -3 scripts/check-account-transfer-native.py` 和 `py -3 scripts/check-account-transfer-native.py --proxy --dark`。检查只创建临时诊断账号和本地假代理，系统文件选择结果由测试注入，不访问真实 Muse 或真实代理。
 
@@ -87,16 +83,6 @@ cargo build --release --locked -p muse-desktop
 构建结果在 `target/release/muse-desktop.exe`，便携 ZIP 和 SHA-256 校验文件在 `dist/`。
 开发运行：`.\scripts\run.ps1`；浏览器账号数据、测试数据与缓存均被 Git 忽略。
 
-macOS 源码构建需要 Xcode 命令行工具、Rust 1.95.0、Node.js 22+ 和 Python 3：
-
-```bash
-export MACOSX_DEPLOYMENT_TARGET=14.0
-cargo test --workspace --locked
-cargo build --release --locked -p muse-desktop
-python3 scripts/check-macos-smoke.py
-python3 scripts/package-macos.py --arch arm64  # Intel Mac 改为 x64
-```
-
 ```powershell
 cargo fmt --all -- --check
 node --test scripts/check-observer.cjs
@@ -108,10 +94,10 @@ node scripts/check-reference-upload.cjs
 
 ## 自动构建与发布
 
-- 提交到 `main`、提交 Pull Request 或在 Actions 中手动运行 **Desktop clients**，会执行检查、测试、编译并上传 Windows ZIP 与两个架构的 Mac 应用包。
+- 提交到 `main`、提交 Pull Request 或在 Actions 中手动运行 **Desktop Windows x64**，会执行检查、测试、Windows 原生启动检查并上传 Windows x64 ZIP 与 SHA-256 校验文件。
 - 普通构建产物位于该次 Actions 运行的 Artifacts，保留 14 天。
 - 发布新版本时先修改根 `Cargo.toml` 的 `[workspace.package].version`，提交后推送同版本的 `v*` 标签。
-- Windows、macOS ARM64 与 macOS Intel 标签构建全部通过后，自动创建 GitHub Release，附带三个客户端包和 SHA-256 校验文件；标签与源码版本不符会拒绝发布。
+- Windows x64 标签构建通过后，自动创建 GitHub Release，仅附带 Windows x64 客户端 ZIP 和 SHA-256 校验文件；标签与源码版本不符会拒绝发布。
 
 ```powershell
 git tag v0.1.1
@@ -136,9 +122,7 @@ MUSE2API 相关适配保留相应 MIT 说明；详见 `NOTICE`、`THIRD_PARTY_NO
 SHA256、体积、架构及解压路径校验通过后，点击「重启并更新」完成安装。
 更新不会导出 Muse Cookie、发送代理认证或修改账号数据；保留原 `--data-dir` 和启动参数。
 Windows 仅替换包内应用文件，原应用备份保留在安装目录的 `.muse-update-backup-*`；
-macOS 校验 Bundle 与签名完整性后替换应用，并在同级保留回退副本。位置不可写时，
-可在 Finder 中定位已校验的 Muse.app，退出应用后按系统权限提示替换，保留数据目录。
-macOS 仍为 ad-hoc 签名、未公证。下载校验不等于独立的发布者签名。
+下载校验不等于独立的发布者签名。
 首次升级仍需手动安装包含更新器的版本；旧版本不会因 GitHub 发版而自动获得该功能。
 
 卡片刷新失败会保留上次成功的值与时间，并标记未更新/旧周期；明确退出登录单独处理。

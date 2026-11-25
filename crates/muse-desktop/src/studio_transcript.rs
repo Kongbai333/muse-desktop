@@ -704,12 +704,3 @@ fn menu_item(
         .child(label)
         .on_click(on_click)
 }
-
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub(super) fn reveal_in_folder(path: &std::path::Path) {
-    let _ = std::process::Command::new("open")
-        .arg("-R")
-        .arg(path)
-        .spawn();
-}

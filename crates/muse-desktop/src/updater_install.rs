@@ -204,47 +204,7 @@ fn validate_binary(path: &Path, platform: &str) -> Result<()> {
             return Err("更新程序架构不匹配".into());
         }
     } else {
-        let cpu = if platform == "macos-arm64" {
-            0x0100000c_u32
-        } else {
-            0x01000007_u32
-        };
-        if header[..4] != [0xcf, 0xfa, 0xed, 0xfe]
-            || u32::from_le_bytes(header[4..8].try_into().unwrap()) != cpu
-        {
-            return Err("Mac更新程序架构不匹配".into());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn validate_bundle(bundle: &Path, version: &str, platform: &str) -> Result<()> {
-    validate_binary(&bundle.join("Contents/MacOS/Muse"), platform)?;
-    for (key, expected) in [
-        ("CFBundleIdentifier", "app.muse.desktop"),
-        ("CFBundleExecutable", "Muse"),
-        ("CFBundleShortVersionString", version),
-    ] {
-        let result = Command::new("/usr/libexec/PlistBuddy")
-            .arg("-c")
-            .arg(format!("Print :{key}"))
-            .arg(bundle.join("Contents/Info.plist"))
-            .output()
-            .map_err(|_| "无法核验Mac更新信息")?;
-        if !result.status.success() || String::from_utf8_lossy(&result.stdout).trim() != expected {
-            return Err("Mac更新Bundle信息不匹配".into());
-        }
-    }
-    if !Command::new("/usr/bin/codesign")
-        .args(["--verify", "--deep", "--strict"])
-        .arg(bundle)
-        .output()
-        .map_err(|_| "无法核验Mac签名")?
-        .status
-        .success()
-    {
-        return Err("Mac更新签名完整性校验失败".into());
+        return Err("暂不支持此架构更新".into());
     }
     Ok(())
 }
@@ -291,8 +251,6 @@ fn normalized_arguments(
 
 pub enum LaunchOutcome {
     Started(PathBuf),
-    #[cfg(target_os = "macos")]
-    NeedsPermission,
 }
 struct CheckedInstall {
     current_exe: PathBuf,
@@ -302,15 +260,12 @@ struct CheckedInstall {
     backup_parent: PathBuf,
     files: Vec<AppFile>,
 }
-fn checked_data_root(install: &Path, data: &Path, bundle: bool) -> Result<PathBuf> {
-    let install = fs::canonicalize(install).map_err(|_| "无法核验原应用目录")?;
+fn checked_data_root(install: &Path, data: &Path) -> Result<PathBuf> {
+    fs::canonicalize(install).map_err(|_| "无法核验原应用目录")?;
     let data = fs::canonicalize(data).map_err(|_| "无法核验原数据目录，未安装更新")?;
-    if bundle && data.starts_with(install) {
-        return Err("数据目录位于应用Bundle内，请先安全迁出数据后更新".into());
-    }
     Ok(data)
 }
-// Shared, read-only safety gate for automatic installation and Finder handoff.
+// Read-only safety gate before the Windows application-file transaction.
 fn readonly_preflight(prepared: &Prepared, data_dir: &Path) -> Result<CheckedInstall> {
     let current_exe = std::env::current_exe()
         .and_then(fs::canonicalize)
@@ -326,20 +281,11 @@ fn readonly_preflight(prepared: &Prepared, data_dir: &Path) -> Result<CheckedIns
     } else {
         cwd.join(data_dir)
     };
-    let bundle = cfg!(target_os = "macos");
-    let install = if bundle {
-        current_exe
-            .ancestors()
-            .find(|p| p.extension().is_some_and(|s| s == "app"))
-            .ok_or("请从Muse.app运行更新")?
-            .to_path_buf()
-    } else {
-        if current_exe.file_name().is_none_or(|s| s != "Muse.exe") {
-            return Err("请从解压后的正式Muse.exe运行更新".into());
-        }
-        current_exe.parent().ok_or("应用路径无效")?.to_path_buf()
-    };
-    let data_dir = checked_data_root(&install, &data, bundle)?;
+    if current_exe.file_name().is_none_or(|s| s != "Muse.exe") {
+        return Err("请从解压后的正式Muse.exe运行更新".into());
+    }
+    let install = current_exe.parent().ok_or("应用路径无效")?.to_path_buf();
+    let data_dir = checked_data_root(&install, &data)?;
     let mut files = Vec::new();
     inventory(&prepared.payload, &prepared.payload, &mut files)?;
     #[cfg(windows)]
@@ -347,22 +293,12 @@ fn readonly_preflight(prepared: &Prepared, data_dir: &Path) -> Result<CheckedIns
         &prepared.payload.join("Muse.exe"),
         &prepared.update.platform,
     )?;
-    #[cfg(target_os = "macos")]
-    validate_bundle(
-        &prepared.payload,
-        &prepared.update.version,
-        &prepared.update.platform,
-    )?;
     for file in &files {
         if data_dir != install && install.join(&file.relative).starts_with(&data_dir) {
             return Err("更新文件与数据目录重叠，已停止安装".into());
         }
     }
-    let backup_parent = if bundle {
-        install.parent().ok_or("应用路径无效")?.to_path_buf()
-    } else {
-        install.clone()
-    };
+    let backup_parent = install.clone();
     Ok(CheckedInstall {
         current_exe,
         cwd,
@@ -393,14 +329,6 @@ fn writable(parent: &Path) -> Result<bool> {
         Err(error) if permission_only(error.kind()) => Ok(false),
         Err(_) => Err("无法准备应用更新，请检查安装位置和磁盘空间".into()),
     }
-}
-#[cfg(target_os = "macos")]
-pub fn verify_handoff(prepared: &Prepared, data_dir: &Path) -> Result<()> {
-    let checked = readonly_preflight(prepared, data_dir)?;
-    if writable(&checked.backup_parent)? {
-        return Err("应用位置可写，请使用「重启并更新」自动安装".into());
-    }
-    Ok(())
 }
 fn controlled_stage(attempt: &Path) -> Result<PathBuf> {
     let attempt = fs::canonicalize(attempt).map_err(|_| "更新尝试目录不存在")?;
@@ -451,8 +379,6 @@ pub fn launch_helper(
     };
     let checked = readonly_preflight(prepared, data_dir)?;
     if !writable(&checked.backup_parent)? {
-        #[cfg(target_os = "macos")]
-        return Ok(LaunchOutcome::NeedsPermission);
         #[cfg(windows)]
         return Err(
             "应用位置不可写，请将应用解压到有写入权限的目录后更新；账号数据目录应保留".into(),
@@ -492,11 +418,7 @@ pub fn launch_helper(
         .map_err(|_| "无法准备更新安装")?;
     file.sync_all().map_err(|_| "无法保存安装计划")?;
     drop(file);
-    let helper = attempt.join(if cfg!(windows) {
-        "Muse-update-helper.exe"
-    } else {
-        "Muse-update-helper"
-    });
+    let helper = attempt.join("Muse-update-helper.exe");
     fs::copy(&checked.current_exe, &helper).map_err(|_| "无法准备更新助手")?;
     let mut command = Command::new(helper);
     command.arg("--apply-update").arg(&path);
@@ -571,42 +493,9 @@ fn wait_parent(plan: &InstallPlan, root: &Path) -> Result<()> {
         result
     }
 }
-#[cfg(target_os = "macos")]
-fn wait_parent(plan: &InstallPlan, root: &Path) -> Result<()> {
-    let output = Command::new("/bin/ps")
-        .args(["-p", &plan.parent_pid.to_string(), "-o", "comm="])
-        .output()
-        .map_err(|_| "无法核验原应用进程")?;
-    if !output.status.success()
-        || fs::canonicalize(String::from_utf8_lossy(&output.stdout).trim())
-            .ok()
-            .as_ref()
-            != Some(&plan.current_exe)
-    {
-        return Err("原应用进程路径不匹配".into());
-    }
-    fs::write(root.join("helper-ready"), b"ready").map_err(|_| "更新助手无法就绪")?;
-    let start = Instant::now();
-    while unsafe { libc::kill(plan.parent_pid as i32, 0) } == 0 {
-        if start.elapsed() > Duration::from_secs(180) {
-            return Err("原应用尚未退出，未安装更新".into());
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    Ok(())
-}
 fn restart_command(plan: &InstallPlan) -> Command {
     #[cfg(windows)]
     let mut command = Command::new(&plan.current_exe);
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut c = Command::new("/usr/bin/open");
-        if plan.background {
-            c.arg("-g");
-        }
-        c.arg("-n").arg(&plan.install).arg("--args");
-        c
-    };
     command.args(&plan.arguments).current_dir(&plan.working_dir);
     if plan.background {
         command.arg("--update-background");
@@ -632,10 +521,12 @@ fn restart_updated(plan: &InstallPlan, root: &Path) -> Result<()> {
         if root.join("application-ready").is_file() {
             return Ok(());
         }
-        if let Some(status) = child.try_wait().map_err(|_| "无法确认新版启动状态")? {
-            if cfg!(windows) || !status.success() {
-                return Err("新版启动提前退出，已尝试回退原应用".into());
-            }
+        if child
+            .try_wait()
+            .map_err(|_| "无法确认新版启动状态")?
+            .is_some()
+        {
+            return Err("新版启动提前退出，已尝试回退原应用".into());
         }
         // A still-running app may take longer. Never overwrite/kill it merely
         // because startup confirmation is late; retain the full rollback copy.
@@ -644,40 +535,6 @@ fn restart_updated(plan: &InstallPlan, root: &Path) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-}
-
-#[cfg(target_os = "macos")]
-fn replace_bundle(plan: &InstallPlan, root: &Path) -> Result<()> {
-    validate_bundle(&plan.staged, &plan.version, &plan.platform)?;
-    // Copy into a sibling to make both switching and rollback same-volume.
-    let incoming = plan
-        .install
-        .with_file_name(format!(".Muse-update-{}.app", uuid::Uuid::new_v4()));
-    fs::create_dir(&incoming).map_err(|_| "应用目录不可写，可在Finder中替换已校验的Muse.app")?;
-    for item in &plan.files {
-        let source = plan.staged.join(&item.relative);
-        let next = incoming.join(&item.relative);
-        fs::create_dir_all(next.parent().ok_or("更新路径无效")?)
-            .map_err(|_| "无法暂存应用Bundle")?;
-        fs::copy(source, &next).map_err(|_| "无法暂存应用Bundle")?;
-        if hash_file(&next)? != item.sha256 {
-            return Err("暂存Bundle校验失败".into());
-        }
-    }
-    validate_bundle(&incoming, &plan.version, &plan.platform)?;
-    fs::rename(&plan.install, &plan.backup).map_err(|_| "原应用无法安全替换")?;
-    if fs::rename(&incoming, &plan.install).is_err() {
-        let _ = fs::rename(&plan.backup, &plan.install);
-        return Err("安装失败，已尝试回退".into());
-    }
-    if let Err(error) = restart_updated(plan, root) {
-        let _ = fs::rename(&plan.install, &incoming);
-        if fs::rename(&plan.backup, &plan.install).is_err() {
-            return Err("启动失败且自动回退未完成，请保留回退目录".into());
-        }
-        return Err(error);
-    }
-    Ok(())
 }
 
 fn run_helper(path: &Path) -> Result<()> {
@@ -695,11 +552,7 @@ fn run_helper(path: &Path) -> Result<()> {
             .map_err(|_| "更新计划无效")?;
     let staged = fs::canonicalize(&plan.staged).map_err(|_| "暂存更新不存在")?;
     let install = fs::canonicalize(&plan.install).map_err(|_| "原应用不存在")?;
-    let backup_parent = if cfg!(windows) {
-        &install
-    } else {
-        install.parent().ok_or("应用路径无效")?
-    };
+    let backup_parent = &install;
     if plan.platform != updater::platform()
         || !staged.starts_with(stage.join("extracted"))
         || install != plan.install
@@ -741,8 +594,6 @@ fn run_helper(path: &Path) -> Result<()> {
     let result = replace_files(&install, &staged, &plan.backup, &plan.files, || {
         restart_updated(&plan, root)
     });
-    #[cfg(target_os = "macos")]
-    let result = replace_bundle(&plan, root);
     let report = serde_json::json!({"installed":result.is_ok(),"startup_confirmed":root.join("application-ready").is_file(),"error":result.as_ref().err(),"backup":plan.backup,"data_preserved":true,"background_restart":plan.background});
     let _ = fs::write(root.join("install-result.json"), report.to_string());
     let _ = crate::account_cache::write(
@@ -852,23 +703,6 @@ pub fn show_background(hwnd: windows::Win32::Foundation::HWND, bounds: gpui::Win
 mod tests {
     use super::*;
     #[test]
-    fn handoff_rejects_bundle_data_direct_relative_and_symbolic_aliases() {
-        let root = std::env::temp_dir().join(format!("muse-handoff-test-{}", uuid::Uuid::new_v4()));
-        let app = root.join("Muse.app");
-        fs::create_dir_all(app.join("Contents")).unwrap();
-        fs::create_dir_all(app.join("data")).unwrap();
-        fs::create_dir_all(root.join("outside")).unwrap();
-        assert!(checked_data_root(&app, &app.join("data"), true).is_err());
-        assert!(checked_data_root(&app, &app.join("Contents/../data"), true).is_err());
-        assert!(checked_data_root(&app, &root.join("outside"), true).is_ok());
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(app.join("data"), root.join("alias")).unwrap();
-            assert!(checked_data_root(&app, &root.join("alias"), true).is_err());
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
     fn failed_helper_attempt_never_blocks_or_authorizes_a_retry() {
         let root = std::env::temp_dir().join(format!("muse-update-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
@@ -889,21 +723,11 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn only_permission_or_readonly_failure_can_enable_manual_handoff() {
+    fn only_permission_or_readonly_failure_is_classified_as_nonwritable() {
         assert!(permission_only(std::io::ErrorKind::PermissionDenied));
         assert!(permission_only(std::io::ErrorKind::ReadOnlyFilesystem));
         assert!(!permission_only(std::io::ErrorKind::NotFound));
         assert!(!permission_only(std::io::ErrorKind::StorageFull));
-    }
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn invalid_native_bundle_cannot_be_approved_for_handoff() {
-        let root =
-            std::env::temp_dir().join(format!("muse-invalid-bundle-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(root.join("Contents/MacOS")).unwrap();
-        fs::write(root.join("Contents/MacOS/Muse"), b"invalid").unwrap();
-        assert!(validate_bundle(&root, "99.9.9", updater::platform()).is_err());
-        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn application_only_commit_preserves_data_and_rolls_back_failed_restart() {

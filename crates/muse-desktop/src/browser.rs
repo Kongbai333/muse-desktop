@@ -23,31 +23,17 @@ use webview2_com::{
 };
 #[cfg(target_os = "windows")]
 use windows::core::{HSTRING, Interface, PWSTR};
-#[cfg(target_os = "macos")]
-use wry::WebViewBuilderExtDarwin;
 use wry::{NewWindowResponse, PageLoadEvent, Rect, WebContext, WebView, WebViewBuilder};
 #[cfg(target_os = "windows")]
 use wry::{WebViewBuilderExtWindows, WebViewExtWindows};
-#[cfg(target_os = "macos")]
-#[path = "browser_macos.rs"]
-mod macos;
 #[path = "browser_transfer.rs"]
 mod transfer;
-#[cfg(target_os = "macos")]
-fn wake(_: &HostedTab) {}
-#[cfg(target_os = "macos")]
-fn set_memory_target(_: &HostedTab, _: bool) {}
 
-/// A newly-created WKWebView has no URL until navigation commits. Wry 0.57.1
-/// unwraps that nullable property, so macOS uses an optional native read instead.
+/// Read the current WebView2 URL without exposing a navigation failure.
 pub fn current_url(view: &WebView) -> Option<String> {
     #[cfg(target_os = "windows")]
     {
         view.url().ok()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        macos::current_url(view)
     }
 }
 
@@ -226,8 +212,6 @@ fn decode_preview(bytes: &[u8]) -> Option<Arc<gpui::RenderImage>> {
 
 #[cfg(target_os = "windows")]
 struct ClosingProcess(windows::Win32::Foundation::HANDLE);
-#[cfg(target_os = "macos")]
-struct ClosingProcess;
 #[cfg(target_os = "windows")]
 impl Drop for ClosingProcess {
     fn drop(&mut self) {
@@ -267,11 +251,8 @@ const KEYBOARD_BRIDGE: &str = r#"
     let action = null;
     if (event.altKey && event.key === 'ArrowLeft') action = 'back';
     if (event.altKey && event.key === 'ArrowRight') action = 'forward';
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') action = 'address';
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') action = 'reload';
-    if (event.metaKey && ['+', '='].includes(event.key)) action = 'zoom_in';
-    if (event.metaKey && event.key === '-') action = 'zoom_out';
-    if (event.metaKey && event.key === '0') action = 'zoom_reset';
+    if (event.ctrlKey && event.key.toLowerCase() === 'l') action = 'address';
+    if (event.ctrlKey && event.key.toLowerCase() === 'r') action = 'reload';
     if (action) {
       event.preventDefault();
       window.ipc.postMessage(JSON.stringify({kind:'command', action}));
@@ -484,9 +465,6 @@ impl BrowserPool {
         };
         self.tabs.remove(&identity.tab_id);
         std::fs::create_dir_all(profile).map_err(|e| e.to_string())?;
-        #[cfg(target_os = "macos")]
-        let store_namespace =
-            crate::session_guard::native_store_namespace(identity.account_id, profile)?;
         let mut context = WebContext::new(Some(profile.to_owned()));
         let navigation_tx = self.sender.clone();
         let title_tx = self.sender.clone();
@@ -585,10 +563,6 @@ impl BrowserPool {
         {
             builder = builder.with_theme(webview_theme(self.display.get().theme));
         }
-        #[cfg(target_os = "macos")]
-        {
-            builder = builder.with_data_store_identifier(*store_namespace.as_bytes());
-        }
         #[cfg(target_os = "windows")]
         if let Some(bridge) = &bridge {
             let bypass = if network.force_proxy() {
@@ -620,18 +594,6 @@ impl BrowserPool {
             let actual = take_pwstr(actual);
             self.profiles
                 .verify(identity.account_id, profile, Path::new(&actual))?;
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let actual = macos::data_store_id(&view)?;
-            self.profiles
-                .verify_namespace(identity.account_id, store_namespace, actual)?;
-            if let Some(bridge) = &bridge {
-                macos::install_proxy(&view, bridge)?;
-            } else {
-                macos::clear_proxy(&view);
-            }
-            macos::set_theme(&view, self.display.get().theme);
         }
         view.zoom(self.display.get().page_zoom())
             .map_err(|error| format!("无法恢复页面缩放：{error}"))?;
@@ -673,10 +635,6 @@ impl BrowserPool {
             unsafe { tab.view.controller().ZoomFactor(&mut factor) }.ok()?;
             (factor.is_finite() && factor > 0.).then_some(factor)
         }
-        #[cfg(target_os = "macos")]
-        {
-            macos::zoom(&tab.view)
-        }
     }
 
     pub fn visible(&self, id: muse_core::TabId) -> Option<bool> {
@@ -686,10 +644,6 @@ impl BrowserPool {
             let mut visible = Default::default();
             unsafe { tab.view.controller().IsVisible(&mut visible) }.ok()?;
             Some(visible.as_bool())
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Some(macos::visible(&tab.view))
         }
     }
 
@@ -723,8 +677,6 @@ impl BrowserPool {
             if let Err(reason) = tab.view.set_theme(webview_theme(mode)) {
                 error.get_or_insert_with(|| reason.to_string());
             }
-            #[cfg(target_os = "macos")]
-            macos::set_theme(&tab.view, mode);
             let _ = tab.view.set_background_color(page_background(mode));
         }
         error.map_or(Ok(()), Err)

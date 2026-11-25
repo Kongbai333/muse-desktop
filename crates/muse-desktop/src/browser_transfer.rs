@@ -1,9 +1,6 @@
 //! Local native account snapshots and unpublished migration staging. No website navigation.
 use super::*;
 use crate::{account_transfer as wire, transfer_cookies};
-#[cfg(target_os = "macos")]
-#[path = "browser_transfer_macos.rs"]
-mod native;
 
 impl BrowserPool {
     pub fn snapshot_transfer(&self, identity: BrowserIdentity) -> Result<wire::CookieSet, String> {

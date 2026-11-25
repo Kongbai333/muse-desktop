@@ -749,8 +749,3 @@ fn write_image_clipboard(window: &Window, dib: &[u8], png: &[u8]) -> Result<(), 
         Err("复制失败，请重试".into())
     }
 }
-
-#[cfg(target_os = "macos")]
-fn write_image_clipboard(_window: &Window, _dib: &[u8], png: &[u8]) -> Result<(), String> {
-    crate::windows_host::write_image_clipboard(png)
-}

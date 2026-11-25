@@ -226,10 +226,6 @@ fn parse_json_cookie(
 
 impl ImportedCookie {
     pub fn native(&self) -> Result<Cookie<'static>, &'static str> {
-        self.native_for_webkit(cfg!(target_os = "macos"))
-    }
-
-    fn native_for_webkit(&self, webkit: bool) -> Result<Cookie<'static>, &'static str> {
         let mut cookie = Cookie::build((self.name.clone(), self.value.to_string()))
             .domain(self.domain.clone())
             .path(self.path.clone())
@@ -243,13 +239,7 @@ impl ImportedCookie {
         if let Some(same_site) = self.same_site {
             cookie = cookie.same_site(same_site);
         }
-        let mut cookie = cookie.build();
-        if webkit && !self.secure {
-            // Foundation treats any Secure property value (including "FALSE")
-            // as enabled. Wry skips that property only when the flag is absent.
-            cookie.set_secure(None);
-        }
-        Ok(cookie)
+        Ok(cookie.build())
     }
 
     pub fn matches(&self, cookie: &Cookie<'_>) -> bool {
@@ -273,45 +263,11 @@ mod tests {
     const NOW: i64 = 1_800_000_000;
 
     #[test]
-    fn webkit_omits_false_secure_on_write_but_still_rejects_secure_readback() {
-        let parsed = parse(
-            r#"[{"name":"hatch_sess","value":"synthetic-http","path":"/","expires":1800003600,"httpOnly":true,"secure":false,"sameSite":"lax"}]"#,
-            "http://muse-proxy-smoke.test/",
-            NOW,
-        )
-        .unwrap();
-        let item = &parsed.items[0];
-        let cookie = item.native_for_webkit(true).unwrap();
-        assert_eq!(
-            cookie.secure(),
-            None,
-            "WebKit must not receive the Secure key"
-        );
-        assert_eq!(cookie.http_only(), Some(true));
-        assert_eq!(cookie.same_site(), Some(SameSite::Lax));
-        assert_eq!(
-            cookie.expires_datetime().unwrap().unix_timestamp(),
-            1_800_003_600
-        );
-        let mut readback = cookie;
-        readback.set_secure(false);
-        assert!(item.matches(&readback));
-        readback.set_secure(true);
-        assert!(
-            !item.matches(&readback),
-            "never weaken the original attribute check"
-        );
-        assert_eq!(item.native_for_webkit(false).unwrap().secure(), Some(false));
-    }
-
-    #[test]
-    fn native_cookie_mapping_keeps_true_secure_on_both_engines() {
+    fn native_cookie_mapping_keeps_true_secure() {
         let parsed = parse("hatch_sess=synthetic-https", "https://muse.ai/", NOW).unwrap();
-        for webkit in [false, true] {
-            let cookie = parsed.items[0].native_for_webkit(webkit).unwrap();
-            assert_eq!(cookie.secure(), Some(true));
-            assert!(parsed.items[0].matches(&cookie));
-        }
+        let cookie = parsed.items[0].native().unwrap();
+        assert_eq!(cookie.secure(), Some(true));
+        assert!(parsed.items[0].matches(&cookie));
     }
 
     #[test]
