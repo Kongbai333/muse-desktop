@@ -15,6 +15,7 @@ mod input_mask;
 mod motion;
 mod page_observer;
 mod platform;
+mod proxy_batch;
 mod proxy_pool;
 mod proxy_settings;
 mod proxy_smoke;

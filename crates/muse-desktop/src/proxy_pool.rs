@@ -3,6 +3,89 @@ use muse_core::{AccountId, AccountNetwork, ProxyProfile, Workspace};
 use std::path::Path;
 use uuid::Uuid;
 
+pub fn import_keys(
+    root: &Path,
+    workspace: &Workspace,
+) -> Result<std::collections::HashSet<crate::proxy_batch::ProxyKey>, String> {
+    workspace
+        .proxy_profiles
+        .iter()
+        .map(|profile| {
+            load(root, profile)
+                .and_then(|draft| crate::proxy_batch::key(&draft))
+                .map_err(|_| {
+                    "无法读取已有代理凭据；为避免重复，本批未导入。请先修复该代理或取消导入".into()
+                })
+        })
+        .collect()
+}
+
+/// Append one batch without publishing partial metadata or changing account routes.
+pub fn append_batch(
+    root: &Path,
+    workspace: &mut Workspace,
+    preview: &crate::proxy_batch::Preview,
+) -> Result<(usize, usize), String> {
+    use crate::proxy_batch::{MAX_ROWS, RowState, key};
+    if preview.rows.len() > MAX_ROWS {
+        return Err(crate::proxy_batch::LIMIT_MESSAGE.into());
+    }
+    let mut seen = import_keys(root, workspace)?;
+    let mut candidate = workspace.clone();
+    let protected = ProtectedStore::new(root);
+    let mut staged = Vec::new();
+    let mut duplicates = preview.duplicates;
+    let result = (|| -> Result<(), String> {
+        for row in &preview.rows {
+            let RowState::Ready(draft) = &row.state else {
+                continue;
+            };
+            if !seen.insert(key(draft)?) {
+                duplicates += 1;
+                continue;
+            }
+            let value = draft.proxy_url()?;
+            let id = Uuid::new_v4();
+            let revision = Uuid::new_v4();
+            // Include the current revision before writing, so even a failed
+            // storage operation is cleaned up using only this batch's new ID.
+            staged.push((id, revision));
+            protected.save_revision(id, revision, &value)?;
+            let mut number = candidate.proxy_profiles.len() + 1;
+            let name = loop {
+                let name = format!("代理 {number}");
+                if !candidate
+                    .proxy_profiles
+                    .iter()
+                    .any(|profile| profile.name == name)
+                {
+                    break name;
+                }
+                number += 1;
+            };
+            candidate.proxy_profiles.push(ProxyProfile {
+                id,
+                name,
+                protocol: draft.protocol.scheme().into(),
+                revision: Some(revision),
+            });
+        }
+        if !staged.is_empty() {
+            commit(root, workspace, candidate)?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        for (id, revision) in staged {
+            protected.remove_revision(id, revision);
+        }
+        return Err(
+            "批量导入保存失败，本批未追加；原有代理与账号绑定保持不变，请检查存储权限后重试".into(),
+        );
+    }
+    Ok((staged.len(), duplicates))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RouteChoice {
     System,

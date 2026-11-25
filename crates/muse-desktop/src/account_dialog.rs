@@ -11,6 +11,9 @@ use zeroize::Zeroizing;
 
 #[path = "cookie_smoke.rs"]
 pub(super) mod cookie_smoke;
+#[path = "proxy_batch_dialog.rs"]
+mod proxy_batch_dialog;
+use proxy_batch_dialog::BatchImport;
 
 struct ConnectionResult {
     draft: ProxyDraft,
@@ -20,6 +23,7 @@ struct ConnectionResult {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PoolScreen {
     List,
+    Batch,
     Edit(Option<Uuid>),
     Remove(Uuid),
 }
@@ -28,6 +32,7 @@ pub(super) struct AccountDialog {
     pub owner: Option<AccountId>,
     pub removing: bool,
     screen: Option<PoolScreen>,
+    batch: Option<BatchImport>,
     route: RouteChoice,
     picking: bool,
     name: Entity<TextInput>,
@@ -102,6 +107,7 @@ impl AccountDialog {
             owner,
             removing,
             screen: None,
+            batch: None,
             route: RouteChoice::System,
             picking: false,
             name,
@@ -336,7 +342,7 @@ impl MuseWindow {
                 cx.notify();
                 return;
             }
-            Some(PoolScreen::Edit(_) | PoolScreen::Remove(_)) => {
+            Some(PoolScreen::Edit(_) | PoolScreen::Remove(_) | PoolScreen::Batch) => {
                 self.show_proxy_pool_screen(PoolScreen::List, window, cx);
                 return;
             }
@@ -373,7 +379,7 @@ impl MuseWindow {
         dialog.picking = false;
         if matches!(
             dialog.screen,
-            Some(PoolScreen::Edit(_) | PoolScreen::Remove(_))
+            Some(PoolScreen::Edit(_) | PoolScreen::Remove(_) | PoolScreen::Batch)
         ) {
             self.show_proxy_pool_screen(PoolScreen::List, window, cx);
         }
@@ -720,6 +726,9 @@ impl MuseWindow {
             );
         }
         dialog.screen = Some(screen);
+        if screen == PoolScreen::Batch {
+            dialog.batch = Some(BatchImport::new());
+        }
         dialog.message = message;
         if self.account_dialog.is_some() || self.account_dialog_return.is_some() {
             dialog.transition = TransitionState::visible();
@@ -742,6 +751,10 @@ impl MuseWindow {
     ) {
         let result = match screen {
             PoolScreen::List => return,
+            PoolScreen::Batch => {
+                self.confirm_proxy_batch(window, cx);
+                return;
+            }
             PoolScreen::Remove(id) => {
                 proxy_pool::remove(&self.data_dir, &mut self.workspace, id).map(|()| Vec::new())
             }
@@ -1280,6 +1293,9 @@ impl MuseWindow {
                 ),
             ),
             Some(PoolScreen::Edit(None)) => ("新增代理", "支持 HTTP、HTTPS、SOCKS5".into()),
+            Some(PoolScreen::Batch) => {
+                ("批量导入代理", "预览有效项后确认追加，密码始终隐藏".into())
+            }
             Some(PoolScreen::Edit(Some(_))) => {
                 ("编辑代理", "保存后，使用此代理的账号会重新连接".into())
             }
@@ -1297,7 +1313,7 @@ impl MuseWindow {
         let drawer = dialog.screen.is_some();
         let sub_screen = matches!(
             dialog.screen,
-            Some(PoolScreen::Edit(_) | PoolScreen::Remove(_))
+            Some(PoolScreen::Edit(_) | PoolScreen::Remove(_) | PoolScreen::Batch)
         );
 
         let close = div()
@@ -1392,6 +1408,7 @@ impl MuseWindow {
         body =
             match dialog.screen {
                 Some(PoolScreen::List) => body.child(self.render_pool_list(cx)),
+                Some(PoolScreen::Batch) => body.child(self.render_proxy_batch(dialog, cx)),
                 Some(PoolScreen::Edit(_)) => body
                     .child(dialog_field("代理名称", dialog.name.clone()))
                     .child(self.render_proxy_form(dialog, cx)),
@@ -1479,10 +1496,18 @@ impl MuseWindow {
                     .px_3()
                     .py_2()
                     .rounded_lg()
-                    .bg(rgb(tone(0xFEF3F2, 0x3D2225)))
+                    .bg(rgb(if dialog.test_ok == Some(true) {
+                        colors().fill
+                    } else {
+                        tone(0xFEF3F2, 0x3D2225)
+                    }))
                     .text_size(px(12.))
                     .line_height(px(19.))
-                    .text_color(rgb(tone(0xB42318, 0xFF9B94)))
+                    .text_color(rgb(if dialog.test_ok == Some(true) {
+                        colors().secondary
+                    } else {
+                        tone(0xB42318, 0xFF9B94)
+                    }))
                     .child(dialog.message.clone()),
             );
         }
@@ -1500,6 +1525,7 @@ impl MuseWindow {
         };
         let (save_label, save_kind) = match dialog.screen {
             Some(PoolScreen::List) => ("新增代理", ButtonKind::Primary),
+            Some(PoolScreen::Batch) => ("确认导入有效项", ButtonKind::Primary),
             Some(PoolScreen::Remove(_)) => ("确认删除", ButtonKind::Danger),
             Some(PoolScreen::Edit(_)) => ("保存代理", ButtonKind::Primary),
             None if dialog.removing => ("确认移除", ButtonKind::Danger),
@@ -1521,6 +1547,13 @@ impl MuseWindow {
             save_label,
             save_kind,
             cx.listener(move |this, _, window, cx| save(this, window, cx)),
+        )
+        .when(
+            dialog
+                .batch
+                .as_ref()
+                .is_some_and(|batch| !batch.can_confirm()),
+            |el| el.opacity(0.45).cursor(CursorStyle::Arrow),
         );
         let footer = if drawer {
             div()
@@ -1530,6 +1563,19 @@ impl MuseWindow {
                 .border_color(rgb(colors().line))
                 .flex()
                 .gap_2()
+                .when(dialog.screen == Some(PoolScreen::List), |el| {
+                    el.child(
+                        dialog_button(
+                            "pool-batch-import",
+                            "批量导入",
+                            ButtonKind::Secondary,
+                            cx.listener(|this, _, window, cx| {
+                                this.show_proxy_pool_screen(PoolScreen::Batch, window, cx)
+                            }),
+                        )
+                        .flex_1(),
+                    )
+                })
                 .child(cancel.flex_1())
                 .child(confirm.flex_1())
         } else {
