@@ -454,6 +454,9 @@ impl BrowserPool {
         }
         let bridge = if network != AccountNetwork::Direct {
             if let Some(bridge) = self.bridges.get(&identity.account_id) {
+                if !bridge.is_running() {
+                    return Err("此账号的代理已停止；未使用直连".into());
+                }
                 Some(bridge.clone())
             } else {
                 let result = (|| {

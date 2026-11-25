@@ -26,6 +26,21 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Embedded proxy components
+
+The SOCKS5 client uses fast-socks5 1.0.0 (MIT), pinned to the published crate
+with source revision bae2fc05f993d3a247b5435ba7da221f3fd80a3c.
+Cancellation and owned connection-task shutdown use tokio-util 0.7.20 (MIT)
+on the existing Tokio runtime. New transitive components are tokio-stream
+0.1.19 (MIT) and socket2 0.5.10 (MIT OR Apache-2.0).
+Their original license notices are included under LICENSES/.
+No independent proxy engine executable or Go runtime is distributed.
+
+Official sources:
+https://github.com/dizda/fast-socks5
+https://github.com/tokio-rs/tokio
+https://github.com/rust-lang/socket2
+
 ## Application updater
 
 The application updater uses ureq 3.5.2 (MIT OR Apache-2.0),

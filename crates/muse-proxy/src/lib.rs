@@ -2,6 +2,11 @@
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
+use fast_socks5::{
+    AuthenticationMethod, Socks5Command,
+    client::{Config as SocksConfig, Socks5Stream},
+    util::target_addr::ToTargetAddr,
+};
 use http_body_util::{BodyExt, Full, combinators::UnsyncBoxBody};
 use hyper::{
     Request, Response, StatusCode,
@@ -25,15 +30,14 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{Semaphore, watch},
-    task::JoinSet,
+    sync::Semaphore,
     time::timeout,
 };
 use tokio_rustls::{
     TlsConnector,
     rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
 };
-use tokio_socks::tcp::Socks5Stream;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
 const DEADLINE: Duration = Duration::from_secs(15);
@@ -274,18 +278,28 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 pub struct ProxyBridge {
     address: SocketAddr,
     auth: Arc<LocalAuth>,
-    stop: watch::Sender<bool>,
+    cancel: CancellationToken,
+    tasks: TaskTracker,
     requests: Arc<AtomicU64>,
 }
 impl ProxyBridge {
     pub fn start(upstream: Upstream) -> Result<Self, ProxyError> {
         let auth = Arc::new(LocalAuth::new());
-        let (stop, stopped) = watch::channel(false);
+        let cancel = CancellationToken::new();
+        let tasks = TaskTracker::new();
+        let run_cancel = cancel.clone();
+        let run_tasks = tasks.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let shared_auth = auth.clone();
         let requests = Arc::new(AtomicU64::new(0));
         let shared_requests = requests.clone();
         runtime().spawn(async move {
+            // Cancellation and closing the task set also run on bind failure or
+            // unwinding, so a failed listener cannot leave child tasks alive.
+            let _lifetime = BridgeLifetime {
+                cancel: run_cancel.clone(),
+                tasks: run_tasks.clone(),
+            };
             let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await {
                 Ok(listener) => listener,
                 Err(_) => {
@@ -297,23 +311,34 @@ impl ProxyBridge {
                 let _ = ready_tx.send(Err(ProxyError::Connect));
                 return;
             };
-            let _ = ready_tx.send(Ok(address));
+            if ready_tx.send(Ok(address)).is_err() {
+                return;
+            }
             run(
                 listener,
                 Arc::new(upstream),
                 shared_auth,
-                stopped,
+                run_cancel,
+                run_tasks,
                 shared_requests,
             )
             .await;
         });
-        let address = ready_rx
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(|_| ProxyError::Timeout)??;
+        let address = match ready_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(address)) => address,
+            result => {
+                cancel.cancel();
+                return Err(result
+                    .ok()
+                    .and_then(Result::err)
+                    .unwrap_or(ProxyError::Timeout));
+            }
+        };
         Ok(Self {
             address,
             auth,
-            stop,
+            cancel,
+            tasks,
             requests,
         })
     }
@@ -329,10 +354,32 @@ impl ProxyBridge {
     pub fn shared_auth(&self) -> Arc<LocalAuth> {
         self.auth.clone()
     }
+    pub fn is_running(&self) -> bool {
+        !self.cancel.is_cancelled()
+    }
+    /// Stop this account's listener and await all HTTP/dial/upgrade/tunnel tasks.
+    /// Call from an async worker; dropping the last owner requests the same stop.
+    pub async fn shutdown(&self) -> Result<(), ProxyError> {
+        self.cancel.cancel();
+        timeout(Duration::from_secs(5), self.tasks.wait())
+            .await
+            .map_err(|_| ProxyError::Timeout)
+    }
 }
 impl Drop for ProxyBridge {
     fn drop(&mut self) {
-        let _ = self.stop.send(true);
+        self.cancel.cancel();
+    }
+}
+
+struct BridgeLifetime {
+    cancel: CancellationToken,
+    tasks: TaskTracker,
+}
+impl Drop for BridgeLifetime {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.tasks.close();
     }
 }
 
@@ -340,34 +387,37 @@ async fn run(
     listener: TcpListener,
     upstream: Arc<Upstream>,
     auth: Arc<LocalAuth>,
-    mut stopped: watch::Receiver<bool>,
+    cancel: CancellationToken,
+    tasks: TaskTracker,
     requests: Arc<AtomicU64>,
 ) {
     let permits = Arc::new(Semaphore::new(96));
     let tunnels = Arc::new(Semaphore::new(96));
-    let mut connections = JoinSet::new();
     loop {
         tokio::select! {
-            _ = stopped.changed() => break,
+            biased;
+            _ = cancel.cancelled() => break,
             result = listener.accept() => {
                 let Ok((socket, peer)) = result else { break; };
                 if !peer.ip().is_loopback() { continue; }
                 let Ok(permit) = permits.clone().try_acquire_owned() else { continue; };
-                let upstream = upstream.clone(); let auth = auth.clone(); let mut connection_stop = stopped.clone(); let tunnels = tunnels.clone(); let requests=requests.clone();
-                connections.spawn(async move {
+                let upstream = upstream.clone(); let auth = auth.clone(); let connection_stop = cancel.clone(); let tunnels = tunnels.clone(); let requests=requests.clone(); let child_tasks = tasks.clone();
+                tasks.spawn(async move {
                     let _permit = permit;
                     let service_stop = connection_stop.clone();
-                    let service = service_fn(move |request| handle(request, upstream.clone(), auth.clone(), service_stop.clone(), tunnels.clone(), requests.clone()));
+                    let service = service_fn(move |request| handle(request, upstream.clone(), auth.clone(), service_stop.clone(), child_tasks.clone(), tunnels.clone(), requests.clone()));
                     let mut builder = hyper::server::conn::http1::Builder::new();
-                    builder.keep_alive(false).max_buf_size(MAX_HEAD).timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(DEADLINE);
+                    builder.keep_alive(false).half_close(true).max_buf_size(MAX_HEAD).timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(DEADLINE);
                     let connection = builder.serve_connection(TokioIo::new(socket), service).with_upgrades();
-                    tokio::select! { _ = connection => {}, _ = connection_stop.changed() => {} }
+                    tokio::select! { biased; _ = connection_stop.cancelled() => {}, _ = connection => {} }
                 });
             },
-            Some(_) = connections.join_next(), if !connections.is_empty() => {},
         }
     }
-    connections.abort_all();
+    cancel.cancel();
+    drop(listener);
+    tasks.close();
+    tasks.wait().await;
 }
 
 fn full(status: StatusCode, text: &str) -> Response<Body> {
@@ -411,7 +461,8 @@ async fn handle(
     mut request: Request<Incoming>,
     upstream: Arc<Upstream>,
     auth: Arc<LocalAuth>,
-    stopped: watch::Receiver<bool>,
+    cancel: CancellationToken,
+    tasks: TaskTracker,
     tunnels: Arc<Semaphore>,
     requests: Arc<AtomicU64>,
 ) -> Result<Response<Body>, Infallible> {
@@ -453,11 +504,11 @@ async fn handle(
             Err(error) => return Ok(full(StatusCode::BAD_GATEWAY, &error.to_string())),
         };
         let upgrade = hyper::upgrade::on(&mut request);
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let _permit = tunnel_permit;
-            let mut stop = stopped;
             tokio::select! {
-                _ = stop.changed() => {},
+                biased;
+                _ = cancel.cancelled() => {},
                 _ = async move {
                     if let Ok(upgraded) = upgrade.await {
                         let mut client = TokioIo::new(upgraded);
@@ -512,9 +563,8 @@ async fn handle(
                 ));
             }
         };
-    let mut connection_stop = stopped;
-    tokio::spawn(async move {
-        tokio::select! { _ = connection => {}, _ = connection_stop.changed() => {} }
+    tasks.spawn(async move {
+        tokio::select! { biased; _ = cancel.cancelled() => {}, _ = connection => {} }
     });
     strip_hop(request.headers_mut());
     if upstream.protocol == ProxyProtocol::Socks5 {
@@ -669,31 +719,51 @@ async fn connect_socks(
     authority: &Authority,
     default_port: u16,
 ) -> Result<UpstreamStream, ProxyError> {
-    let proxy = (upstream.host.as_str(), upstream.port);
+    // Resolve/connect the proxy with Tokio, rather than the client's synchronous
+    // ToSocketAddrs helper. Target domains are sent to SOCKS without local DNS.
+    let socket = TcpStream::connect((upstream.host.as_str(), upstream.port))
+        .await
+        .map_err(|_| ProxyError::Connect)?;
     let target = (
         authority.host().trim_matches(['[', ']']),
         authority.port_u16().unwrap_or(default_port),
-    );
-    let result = match &upstream.socks_auth {
+    )
+        .to_target_addr()
+        .map_err(|_| ProxyError::Invalid)?;
+    let auth = match &upstream.socks_auth {
         Some((user, secret)) => {
             let secret = if secret.is_empty() {
                 "x"
             } else {
                 secret.as_str()
             };
-            Socks5Stream::connect_with_password(proxy, target, user, secret).await
+            Some(AuthenticationMethod::Password {
+                username: user.clone(),
+                password: secret.to_owned(),
+            })
         }
-        None => Socks5Stream::connect(proxy, target).await,
+        None => None,
     };
-    result
-        .map(|stream| Box::new(stream.into_inner()) as UpstreamStream)
-        .map_err(|error| match error {
-            tokio_socks::Error::NoAcceptableAuthMethods
-            | tokio_socks::Error::AuthorizationRequired
-            | tokio_socks::Error::PasswordAuthFailure(_)
-            | tokio_socks::Error::UnknownAuthMethod => ProxyError::Authentication,
-            _ => ProxyError::Connect,
-        })
+    let mut stream = Socks5Stream::use_stream(socket, auth, SocksConfig::default())
+        .await
+        .map_err(socks_error)?;
+    stream
+        .request(Socks5Command::TCPConnect, target)
+        .await
+        .map_err(socks_error)?;
+    Ok(Box::new(stream))
+}
+
+fn socks_error(error: fast_socks5::SocksError) -> ProxyError {
+    // Library errors can include a username. Never expose their Display/Debug.
+    match error {
+        fast_socks5::SocksError::AuthMethodUnacceptable(_)
+        | fast_socks5::SocksError::AuthenticationRejected(_) => ProxyError::Authentication,
+        fast_socks5::SocksError::ReplyError(fast_socks5::ReplyError::ConnectionTimeout) => {
+            ProxyError::Timeout
+        }
+        _ => ProxyError::Connect,
+    }
 }
 
 #[cfg(test)]
