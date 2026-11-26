@@ -27,6 +27,14 @@
 `Muse.exe --data-dir "原数据目录"` 沿用账号和历史；升级时不要删除该目录。
 安装包不包含开发者的账号、Cookie、代理凭据或聊天数据。
 
+如需先通过 Windows 系统代理连接账号已绑定的代理，在解压目录用 PowerShell 运行：
+
+```powershell
+./Muse.exe --proxy-via-system
+```
+
+此选项需要 Windows 已启用单一的本机静态回环 HTTP 代理（使用数字 IP 地址）。配置了 PAC 或未启用静态代理时，此选项不可用。连接失败不会回退直连。不加此选项时，保持原有启动和连接方式。
+
 开发脚本默认使用项目下的 `.runtime/development`，诊断模式使用 `.runtime/diagnostics`，与上述默认目录不同。
 从开发版或旧启动器切换前，请核对原启动参数中的 `--data-dir`；退出相关实例、备份并确认版本兼容后再沿用原目录。
 不要覆盖现有账号目录或只复制 Cookie 数据库。
