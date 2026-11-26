@@ -448,15 +448,15 @@ impl BrowserPool {
             }
         };
         let binding = (network, credential);
-        if self.unverified_close.contains(&identity.account_id) {
-            return Err("无法核验旧浏览器已退出。请关闭并重开应用；未复用旧出口".into());
-        }
         if self
             .bindings
             .get(&identity.account_id)
             .is_some_and(|previous| *previous != binding)
         {
             self.invalidate_account(identity.account_id);
+        }
+        if self.unverified_close.contains(&identity.account_id) {
+            return Err("无法核验旧浏览器已退出。请关闭并重开应用；未复用旧出口".into());
         }
         #[cfg(target_os = "windows")]
         if let Some(processes) = self.closing.get(&identity.account_id) {
