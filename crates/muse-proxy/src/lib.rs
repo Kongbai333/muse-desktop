@@ -1,9 +1,15 @@
 //! Authenticated, account-owned loopback proxy; never falls back to direct.
 
+mod connect_response;
 pub mod trace;
+mod transport;
 use trace::{
     Context as TraceContext, Event as TraceEvent, Outcome as TraceOutcome, Source as TraceSource,
     Span as TraceSpan, Stage as TraceStage,
+};
+pub use transport::{
+    configure_system_transport, parse_system_proxy, system_transport_enabled,
+    system_transport_status, validate_system_upstream,
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -91,7 +97,7 @@ impl ProxyProtocol {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProxyError {
     Invalid,
     Unsupported,
@@ -101,6 +107,14 @@ pub enum ProxyError {
     Protocol,
     Timeout,
     Stopped,
+    SystemConfiguration,
+    SystemNonLoopback,
+    SystemDisabled,
+    SystemUnavailable,
+    SystemRejected,
+    SystemProtocol,
+    SystemLoop,
+    SystemTimeout,
 }
 
 impl std::fmt::Display for ProxyError {
@@ -114,6 +128,18 @@ impl std::fmt::Display for ProxyError {
             Self::Protocol => "代理响应无效",
             Self::Timeout => "代理连接超时；未使用直连",
             Self::Stopped => "代理已停止",
+            Self::SystemConfiguration => {
+                "系统前置代理配置不可用：仅支持已启用的静态单回环 HTTP 端点；未切换出口"
+            }
+            Self::SystemUnavailable => "无法连接本机系统前置代理；未切换出口或直连",
+            Self::SystemNonLoopback => "系统前置代理为非回环地址，已拒绝连接；未切换出口",
+            Self::SystemDisabled => {
+                "Windows 未启用静态 HTTP 系统代理，已阻止账号代理连接；未切换出口"
+            }
+            Self::SystemRejected => "本机系统前置代理拒绝 CONNECT；未发送账号代理认证，未切换出口",
+            Self::SystemProtocol => "本机系统前置代理的 CONNECT 响应无效或超出限制；未切换出口",
+            Self::SystemLoop => "账号代理与系统前置代理形成回环；已阻止连接",
+            Self::SystemTimeout => "本机系统前置代理连接超时；未切换出口或直连",
         })
     }
 }
@@ -252,6 +278,7 @@ impl Upstream {
             self.port,
             &self.authorization,
             &self.credentials,
+            transport::identity(),
         ))
     }
 
@@ -261,6 +288,10 @@ impl Upstream {
             context.action = trace::new_id();
         }
         context.protocol = Some(self.protocol);
+        context.transport = Some(transport::trace_kind());
+        if system_transport_enabled() {
+            context.route_path = Some(transport::route_path(self.protocol));
+        }
         context.destination = Some(trace::Destination::Muse);
         context.target = trace::target_id("muse.ai", 443);
         TraceEvent::new(context, TraceStage::ProbeStart, TraceOutcome::Start).emit();
@@ -335,9 +366,14 @@ impl ProxyBridge {
         Self::start_traced(upstream, TraceContext::default())
     }
     pub fn start_traced(upstream: Upstream, mut context: TraceContext) -> Result<Self, ProxyError> {
+        validate_system_upstream(&upstream)?;
         context.route = upstream.trace_route_id();
         context.bridge = trace::new_id();
         context.protocol = Some(upstream.protocol);
+        context.transport = Some(transport::trace_kind());
+        if system_transport_enabled() {
+            context.route_path = Some(transport::route_path(upstream.protocol));
+        }
         context.source = Some(TraceSource::Bridge);
         TraceEvent::new(context, TraceStage::BridgeStart, TraceOutcome::Start).emit();
         let auth = Arc::new(LocalAuth::new());
@@ -657,7 +693,7 @@ async fn handle(
             event.emit();
             return Ok(full(
                 StatusCode::GATEWAY_TIMEOUT,
-                &ProxyError::Timeout.to_string(),
+                &transport::timeout_error(pending).to_string(),
             ));
         }
     };
@@ -769,81 +805,8 @@ async fn connect_tunnel(
         })?;
         flush.end(TraceOutcome::Ok, None);
         pending = TraceStage::HttpConnectRead;
-        let read = TraceSpan::new(context, pending);
-        TraceEvent::new(context, pending, TraceOutcome::Start).emit();
-        let mut response = Vec::new();
-        loop {
-            let mut chunk = [0; 4096];
-            let count = socket.read(&mut chunk).await.map_err(|error| {
-                read.io(&error);
-                ProxyError::Connect
-            })?;
-            if count == 0 {
-                read.end(TraceOutcome::ResponseEof, None);
-                return Err(ProxyError::Protocol);
-            }
-            response.extend_from_slice(&chunk[..count]);
-            while let Some(end) = response.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                if end > MAX_HEAD {
-                    trace_connect_parse(context, trace::ParseFailure::HeadTooLarge);
-                    return Err(ProxyError::Protocol);
-                }
-                let text = std::str::from_utf8(&response[..end]).map_err(|_| {
-                    trace_connect_parse(context, trace::ParseFailure::InvalidUtf8);
-                    ProxyError::Protocol
-                })?;
-                let mut status = text
-                    .lines()
-                    .next()
-                    .ok_or_else(|| {
-                        trace_connect_parse(context, trace::ParseFailure::MissingStatusLine);
-                        ProxyError::Protocol
-                    })?
-                    .split_whitespace();
-                if !matches!(status.next(), Some("HTTP/1.0" | "HTTP/1.1")) {
-                    trace_connect_parse(context, trace::ParseFailure::InvalidVersion);
-                    return Err(ProxyError::Protocol);
-                }
-                let code: u16 = status.next().and_then(|c| c.parse().ok()).ok_or_else(|| {
-                    trace_connect_parse(context, trace::ParseFailure::InvalidStatus);
-                    ProxyError::Protocol
-                })?;
-                let mut event = TraceEvent::new(
-                    context,
-                    TraceStage::HttpConnect,
-                    if (200..300).contains(&code) {
-                        TraceOutcome::Ok
-                    } else if (100..200).contains(&code) {
-                        TraceOutcome::Start
-                    } else if code == 407 {
-                        TraceOutcome::Authentication
-                    } else {
-                        TraceOutcome::Protocol
-                    },
-                );
-                event.http_status = Some(code as i32);
-                event.duration_ms = Some(connect.elapsed_ms());
-                event.emit();
-                if !(100..200).contains(&code) {
-                    read.end(TraceOutcome::Ok, None);
-                }
-                if code == 407 {
-                    return Err(ProxyError::Authentication);
-                }
-                if (100..200).contains(&code) {
-                    response.drain(..end + 4);
-                    continue;
-                }
-                if !(200..300).contains(&code) {
-                    return Err(ProxyError::Connect);
-                }
-                return Ok((socket, response[end + 4..].to_vec()));
-            }
-            if response.len() > MAX_HEAD {
-                trace_connect_parse(context, trace::ParseFailure::HeadTooLarge);
-                return Err(ProxyError::Protocol);
-            }
-        }
+        let prefix = connect_response::read(&mut socket, context, false, &connect).await?;
+        Ok((socket, prefix))
     })
     .await
     .map_err(|_| {
@@ -851,7 +814,7 @@ async fn connect_tunnel(
         event.pending_stage = Some(pending);
         event.duration_ms = Some(tunnel.elapsed_ms());
         event.emit();
-        ProxyError::Timeout
+        transport::timeout_error(pending)
     })
     .and_then(|result| result);
     tunnel.end(
@@ -863,33 +826,14 @@ async fn connect_tunnel(
     result
 }
 
-fn trace_connect_parse(context: TraceContext, reason: trace::ParseFailure) {
-    let mut event = TraceEvent::new(
-        context,
-        TraceStage::HttpConnectParse,
-        TraceOutcome::Protocol,
-    );
-    event.parse_failure = Some(reason);
-    event.emit();
-}
-
 async fn connect_http_proxy(
     upstream: &Upstream,
     context: TraceContext,
     pending: &mut TraceStage,
 ) -> Result<UpstreamStream, ProxyError> {
-    *pending = TraceStage::ProviderTcp;
-    let tcp = TraceSpan::new(context, TraceStage::ProviderTcp);
-    TraceEvent::new(context, TraceStage::ProviderTcp, TraceOutcome::Start).emit();
-    let socket = TcpStream::connect((upstream.host.as_str(), upstream.port))
-        .await
-        .map_err(|error| {
-            tcp.io(&error);
-            ProxyError::Connect
-        })?;
-    tcp.end(TraceOutcome::Ok, None);
+    let socket = transport::dial(upstream, context, pending).await?;
     if upstream.protocol == ProxyProtocol::Http {
-        return Ok(Box::new(socket));
+        return Ok(socket);
     }
     let name = ServerName::try_from(upstream.host.clone()).map_err(|_| ProxyError::Invalid)?;
     let connector = HTTPS_CONNECTOR
@@ -928,16 +872,7 @@ async fn connect_socks(
 ) -> Result<UpstreamStream, ProxyError> {
     // Resolve/connect the proxy with Tokio, rather than the client's synchronous
     // ToSocketAddrs helper. Target domains are sent to SOCKS without local DNS.
-    *pending = TraceStage::ProviderTcp;
-    let tcp = TraceSpan::new(context, TraceStage::ProviderTcp);
-    TraceEvent::new(context, TraceStage::ProviderTcp, TraceOutcome::Start).emit();
-    let socket = TcpStream::connect((upstream.host.as_str(), upstream.port))
-        .await
-        .map_err(|error| {
-            tcp.io(&error);
-            ProxyError::Connect
-        })?;
-    tcp.end(TraceOutcome::Ok, None);
+    let socket = transport::dial(upstream, context, pending).await?;
     let target = (
         authority.host().trim_matches(['[', ']']),
         authority.port_u16().unwrap_or(default_port),

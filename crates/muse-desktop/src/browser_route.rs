@@ -28,17 +28,32 @@ impl AccountRoute {
             .ok()
             .is_some_and(|v| scoped_auth_runtime(&v));
         let authenticated = upstream.credentials().is_some();
-        let path = match (upstream.protocol(), authenticated, scoped_auth) {
-            (ProxyProtocol::Socks5, true, _) => RoutePath::Socks5AuthBridge,
-            (ProxyProtocol::Http, true, false) => RoutePath::HttpAuthBridge,
-            (ProxyProtocol::Https, true, false) => RoutePath::HttpsAuthBridge,
-            (ProxyProtocol::Http, _, _) => RoutePath::NativeHttp,
-            (ProxyProtocol::Https, _, _) => RoutePath::NativeHttps,
-            (ProxyProtocol::Socks5, false, _) => RoutePath::NativeSocks5,
+        let via_system =
+            muse_proxy::validate_system_upstream(&upstream).map_err(|e| e.to_string())?;
+        let path = if via_system {
+            match upstream.protocol() {
+                ProxyProtocol::Http => RoutePath::SystemHttpBridge,
+                ProxyProtocol::Https => RoutePath::SystemHttpsBridge,
+                ProxyProtocol::Socks5 => RoutePath::SystemSocks5Bridge,
+            }
+        } else {
+            match (upstream.protocol(), authenticated, scoped_auth) {
+                (ProxyProtocol::Socks5, true, _) => RoutePath::Socks5AuthBridge,
+                (ProxyProtocol::Http, true, false) => RoutePath::HttpAuthBridge,
+                (ProxyProtocol::Https, true, false) => RoutePath::HttpsAuthBridge,
+                (ProxyProtocol::Http, _, _) => RoutePath::NativeHttp,
+                (ProxyProtocol::Https, _, _) => RoutePath::NativeHttps,
+                (ProxyProtocol::Socks5, false, _) => RoutePath::NativeSocks5,
+            }
         };
         context.route = upstream.trace_route_id();
         context.protocol = Some(upstream.protocol());
         context.route_path = Some(path);
+        context.transport = Some(if via_system {
+            muse_proxy::trace::Transport::SystemLoopback
+        } else {
+            muse_proxy::trace::Transport::DirectToAccountProxy
+        });
         let host = if upstream.host().contains(':') {
             format!("[{}]", upstream.host())
         } else {
@@ -52,7 +67,12 @@ impl AccountRoute {
         .map_err(|_| "代理端点无效")?;
         let bridge = if matches!(
             path,
-            RoutePath::Socks5AuthBridge | RoutePath::HttpAuthBridge | RoutePath::HttpsAuthBridge
+            RoutePath::Socks5AuthBridge
+                | RoutePath::HttpAuthBridge
+                | RoutePath::HttpsAuthBridge
+                | RoutePath::SystemHttpBridge
+                | RoutePath::SystemHttpsBridge
+                | RoutePath::SystemSocks5Bridge
         ) {
             let bridge = Arc::new(
                 ProxyBridge::start_traced(upstream.clone(), context).map_err(|e| e.to_string())?,
@@ -82,6 +102,9 @@ impl AccountRoute {
     }
     pub fn label(&self) -> &'static str {
         match self.context.route_path {
+            Some(RoutePath::SystemHttpBridge) => "系统回环前置 → 账号 HTTP 代理",
+            Some(RoutePath::SystemHttpsBridge) => "系统回环前置 → 账号 HTTPS 代理",
+            Some(RoutePath::SystemSocks5Bridge) => "系统回环前置 → 账号 SOCKS5 代理",
             Some(RoutePath::NativeHttp) => "WebView2 原生 HTTP",
             Some(RoutePath::NativeHttps) => "WebView2 原生 HTTPS",
             Some(RoutePath::NativeSocks5) => "WebView2 原生 SOCKS5（无认证）",

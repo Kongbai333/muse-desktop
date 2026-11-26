@@ -33,6 +33,7 @@ mod site_avatar;
 mod studio;
 mod studio_image;
 mod studio_reference;
+mod system_transport;
 mod theme;
 mod transfer_cookies;
 mod transfer_flow;
@@ -77,6 +78,11 @@ fn main() {
     let _proxy_trace = proxy_trace::start(
         &data_dir,
         arguments.iter().any(|argument| argument == "--proxy-trace"),
+    );
+    system_transport::start(
+        arguments
+            .iter()
+            .any(|argument| argument == "--proxy-via-system"),
     );
     // The app has no console window, so a panic would otherwise close it silently.
     // Keep the last panic (message, source location and backtrace) next to the data.
@@ -176,12 +182,17 @@ fn main() {
                 }))
                 .map_err(|e| e.to_string())
         })();
+        let transport_mode = if muse_proxy::system_transport_enabled() {
+            "system_loopback_http"
+        } else {
+            "direct_to_account_proxy"
+        };
         let report = match result {
             Ok(()) => {
-                serde_json::json!({"connected_through_upstream":true,"authentication_accepted":true,"direct_fallback":false,"scope":"tunnel_to_muse_ai_443","connection_layer":"rust_compatibility_probe","browser_page_verification":"account_window_only","tls_verified":false,"page_access_verified":false})
+                serde_json::json!({"connected_through_upstream":true,"authentication_accepted":true,"direct_fallback":false,"scope":"tunnel_to_muse_ai_443","connection_layer":"rust_compatibility_probe","transport_mode":transport_mode,"browser_page_verification":"account_window_only","tls_verified":false,"page_access_verified":false})
             }
             Err(error) => {
-                serde_json::json!({"connected_through_upstream":false,"error":error,"direct_fallback":false,"scope":"tunnel_to_muse_ai_443","connection_layer":"rust_compatibility_probe","browser_page_verification":"account_window_only","tls_verified":false,"page_access_verified":false})
+                serde_json::json!({"connected_through_upstream":false,"error":error,"direct_fallback":false,"scope":"tunnel_to_muse_ai_443","connection_layer":"rust_compatibility_probe","transport_mode":transport_mode,"browser_page_verification":"account_window_only","tls_verified":false,"page_access_verified":false})
             }
         };
         let _ = std::fs::write(

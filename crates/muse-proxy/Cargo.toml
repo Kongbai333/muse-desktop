@@ -10,6 +10,7 @@ bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+httparse = "=1.10.1"
 fast-socks5 = "=1.0.0"
 percent-encoding = "2"
 rustls-native-certs = "0.8"

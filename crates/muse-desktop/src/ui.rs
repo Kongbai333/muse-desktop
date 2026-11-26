@@ -331,9 +331,13 @@ impl MuseWindow {
             focus: cx.focus_handle(),
             home,
             diagnostic_origin,
-            status: startup_error.clone().or(caption_error).unwrap_or_else(|| {
-                crate::proxy_trace::notice().unwrap_or_else(|| "账号数据保存在本机".into())
-            }),
+            status: startup_error
+                .clone()
+                .or(caption_error)
+                .or_else(crate::system_transport::notice)
+                .unwrap_or_else(|| {
+                    crate::proxy_trace::notice().unwrap_or_else(|| "账号数据保存在本机".into())
+                }),
             save_enabled: startup_error.is_none(),
             pending_save: None,
             display,

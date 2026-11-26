@@ -18,6 +18,9 @@ macro_rules! tags {
     };
 }
 tags!(Stage {
+    SystemConfig => "system_transport_config", SystemTcp => "system_proxy_tcp",
+    SystemConnect => "system_proxy_connect", SystemConnectWrite => "system_proxy_connect_write",
+    SystemConnectRead => "system_proxy_connect_read", SystemConnectParse => "system_proxy_connect_parse",
     RouteSelected => "route_selected", AuthEndpointBlocked => "auth_endpoint_blocked",
     ProbeStart => "probe_start", ProbeEnd => "probe_end",
     BridgeStart => "bridge_start", BridgeEnd => "bridge_end", BridgeError => "bridge_error",
@@ -50,10 +53,12 @@ tags!(Outcome {
 tags!(Source { Bridge => "bridge", WebView => "webview", PoolTest => "pool_draft_test", AccountTest => "account_draft_test", CliTest => "cli_saved_route_test" });
 tags!(Binding { Direct => "direct", Legacy => "legacy", Pool => "pool" });
 tags!(RoutePath {
+    SystemHttpBridge => "system_http_bridge", SystemHttpsBridge => "system_https_bridge", SystemSocks5Bridge => "system_socks5_bridge",
     NativeHttp => "native_http", NativeHttps => "native_https", NativeSocks5 => "native_socks5",
     Socks5AuthBridge => "socks5_auth_bridge", HttpAuthBridge => "http_auth_compatibility_bridge",
     HttpsAuthBridge => "https_auth_compatibility_bridge"
 });
+tags!(Transport { DirectToAccountProxy => "direct_to_account_proxy", SystemLoopback => "system_loopback_http" });
 tags!(Destination { Muse => "muse", Instagram => "instagram", Other => "other" });
 tags!(ParseFailure {
     HeadTooLarge => "head_too_large", InvalidUtf8 => "invalid_utf8",
@@ -87,6 +92,7 @@ pub struct Context {
     pub binding: Option<Binding>,
     pub protocol: Option<crate::ProxyProtocol>,
     pub route_path: Option<RoutePath>,
+    pub transport: Option<Transport>,
     pub proxy_required: Option<bool>,
     pub force_proxy: Option<bool>,
     pub destination: Option<Destination>,
@@ -172,13 +178,21 @@ pub fn io_outcome(error: &std::io::Error) -> Outcome {
 impl From<crate::ProxyError> for Outcome {
     fn from(error: crate::ProxyError) -> Self {
         match error {
-            crate::ProxyError::Invalid | crate::ProxyError::Unsupported => Self::Configuration,
+            crate::ProxyError::Invalid
+            | crate::ProxyError::Unsupported
+            | crate::ProxyError::SystemConfiguration
+            | crate::ProxyError::SystemLoop
+            | crate::ProxyError::SystemNonLoopback
+            | crate::ProxyError::SystemDisabled => Self::Configuration,
             crate::ProxyError::Connect => Self::Connect,
             crate::ProxyError::Tls => Self::Tls,
             crate::ProxyError::Authentication => Self::Authentication,
             crate::ProxyError::Protocol => Self::Protocol,
             crate::ProxyError::Timeout => Self::Timeout,
             crate::ProxyError::Stopped => Self::Stopped,
+            crate::ProxyError::SystemUnavailable => Self::Connect,
+            crate::ProxyError::SystemRejected | crate::ProxyError::SystemProtocol => Self::Protocol,
+            crate::ProxyError::SystemTimeout => Self::Timeout,
         }
     }
 }

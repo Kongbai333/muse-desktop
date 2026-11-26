@@ -3391,6 +3391,7 @@ dependencies = [
  "bytes",
  "fast-socks5",
  "http-body-util",
+ "httparse",
  "hyper",
  "hyper-util",
  "percent-encoding",

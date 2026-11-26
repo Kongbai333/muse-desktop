@@ -275,6 +275,9 @@ fn event_json(envelope: Envelope, session: &str) -> serde_json::Value {
     if let Some(v) = c.route_path {
         map.insert("route_path".into(), v.label().into());
     }
+    if let Some(v) = c.transport {
+        map.insert("transport".into(), v.label().into());
+    }
     if let Some(v) = c.destination {
         map.insert("destination".into(), v.label().into());
     }

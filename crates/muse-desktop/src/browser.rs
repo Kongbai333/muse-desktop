@@ -507,6 +507,7 @@ impl BrowserPool {
             trace_context.bridge = context.bridge;
             trace_context.protocol = context.protocol;
             trace_context.route_path = context.route_path;
+            trace_context.transport = context.transport;
         }
         let native_trace = Arc::new(Mutex::new(crate::proxy_trace::Navigation::new(
             trace_context,
