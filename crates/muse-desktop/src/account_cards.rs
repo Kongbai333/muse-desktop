@@ -45,9 +45,10 @@ fn extra_pill(state: &muse_core::ExtraQuotaState) -> String {
 const SEGMENTS: usize = 20;
 fn plan_usage(quota: &muse_core::QuotaState) -> (Option<f64>, bool, String) {
     let used = used_percent(quota);
-    let exhausted = used.is_some_and(|value| value >= 99.5);
+    let exhausted = used == Some(100.);
     let label = match used {
-        Some(_) if exhausted => "已用完".into(),
+        Some(value) if value > 0. && value.round() == 0. => "<1%".into(),
+        Some(value) if !exhausted && value.round() == 100. => ">99%".into(),
         Some(value) => format!("{value:.0}%"),
         None => match quota {
             muse_core::QuotaState::Unlimited { .. }
@@ -62,17 +63,65 @@ fn plan_usage(quota: &muse_core::QuotaState) -> (Option<f64>, bool, String) {
     (used, exhausted, label)
 }
 
+fn filled_segments(used: f64) -> usize {
+    if used <= 0. {
+        0
+    } else if used >= 100. {
+        SEGMENTS
+    } else {
+        ((used * SEGMENTS as f64 / 100.).round() as usize).clamp(1, SEGMENTS - 1)
+    }
+}
+
+fn segment_color(index: usize) -> u32 {
+    const ORANGE_INDEX: usize = (SEGMENTS - 1) * 7 / 10;
+    let orange = tone(0xF39A46, 0xFFB76C);
+    let (start, end, fraction) = if index <= ORANGE_INDEX {
+        (colors().blue, orange, index as f32 / ORANGE_INDEX as f32)
+    } else {
+        (
+            orange,
+            colors().danger,
+            (index - ORANGE_INDEX) as f32 / (SEGMENTS - 1 - ORANGE_INDEX) as f32,
+        )
+    };
+    let channel = |shift: u32| {
+        let from = ((start >> shift) & 255) as f32;
+        let to = ((end >> shift) & 255) as f32;
+        ((from + (to - from) * fraction).round() as u32) << shift
+    };
+    channel(16) | channel(8) | channel(0)
+}
+
+fn quota_meter(used: Option<f64>, height: f32, gap: f32) -> Div {
+    div()
+        .w_full()
+        .h(px(height))
+        .flex()
+        .gap(px(gap))
+        .when_some(used, |meter, used| {
+            let filled = filled_segments(used);
+            meter.children((0..SEGMENTS).map(|index| {
+                let color = if index < filled {
+                    segment_color(index)
+                } else {
+                    tone(0xD5D6DC, 0x62636E)
+                };
+                div().flex_1().h_full().rounded(px(1.5)).bg(rgb(color))
+            }))
+        })
+}
+
 #[inline(never)]
 fn account_row_summary(account: &muse_core::Account) -> Div {
     let (used, exhausted, status) = plan_usage(&account.quota);
-    let percent = used.map(|value| value.round() as u8);
-    let label = match percent {
-        Some(percent) => format!("周额度已用 {percent}%"),
+    let label = match used {
+        Some(_) => format!("周额度已用 {status}"),
         None => format!("周额度{status}"),
     };
     let color = if exhausted {
         colors().danger
-    } else if percent.is_some() {
+    } else if used.is_some() {
         colors().blue
     } else {
         colors().secondary
@@ -106,26 +155,18 @@ fn account_row_summary(account: &muse_core::Account) -> Div {
                         .child(label),
                 ),
         )
-        .child(
-            div()
-                .h(px(4.))
-                .rounded_full()
-                .when_some(percent, |track, percent| {
-                    track.bg(rgb(colors().track)).child(
-                        div()
-                            .h_full()
-                            .w(relative(f32::from(percent) / 100.))
-                            .rounded_full()
-                            .bg(rgb(color)),
-                    )
-                }),
-        )
+        .child(quota_meter(used, 7., 2.))
 }
 
 impl MuseWindow {
-    pub(super) fn prepare_account_rows(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn prepare_account_rows(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.account_focus
             .retain(|id, _| self.workspace.account(*id).is_some());
+        self.account_keyboard_focus = self.account_keyboard_focus.filter(|id| {
+            self.account_focus
+                .get(id)
+                .is_some_and(|handle| handle.is_focused(window))
+        });
         for account in &self.workspace.accounts {
             self.account_focus
                 .entry(account.id)
@@ -142,6 +183,7 @@ impl MuseWindow {
     ) -> Stateful<Div> {
         let id = account.id;
         let active = !self.show_start_page && self.workspace.active_account_id() == Some(id);
+        let anchor_y = std::rc::Rc::new(std::cell::Cell::new(px(0.)));
         div()
             .id(id)
             .relative()
@@ -150,15 +192,35 @@ impl MuseWindow {
             .cursor_pointer()
             .mx_2()
             .mb_1()
-            .border_1()
-            .border_color(rgba(0x00000000))
             .track_focus(&self.account_focus[&id])
-            .focus(|style| style.border_color(rgb(colors().blue)))
+            .child({
+                let anchor_y = anchor_y.clone();
+                canvas(
+                    move |area, _, _| anchor_y.set(area.center().y),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0()
+            })
             .when(!active, |element| {
                 element.hover(|style| style.bg(rgb(colors().fill_hover)))
             })
             .when(active, |element| {
-                element.child(self.card_selection_layer(format!("row-selection-{id}").into()))
+                element
+                    .bg(rgb(tone(0xDFE8F8, 0x313F56)))
+                    .hover(|style| style.bg(rgb(tone(0xD8E3F5, 0x384862))))
+            })
+            .when(self.account_keyboard_focus == Some(id), |element| {
+                element.child(
+                    div()
+                        .absolute()
+                        .left(px(3.))
+                        .top(px(if compact { 15. } else { 21. }))
+                        .w(px(3.))
+                        .h(px(16.))
+                        .rounded_full()
+                        .bg(rgb(colors().blue)),
+                )
             })
             .when(compact, |element| {
                 element
@@ -171,11 +233,11 @@ impl MuseWindow {
             .when(!compact, |element| {
                 element
                     .px_3()
-                    .py_2()
+                    .h(px(58.))
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(self.account_avatar(account, 28., active).flex_none())
+                    .child(self.account_avatar(account, 38., active))
                     .child(account_row_summary(account))
             })
             .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
@@ -210,7 +272,7 @@ impl MuseWindow {
                             this.prefetch_page_snapshot();
                             this.account_detail = Some(AccountDetail {
                                 account: id,
-                                anchor_y: px(110.),
+                                anchor_y: anchor_y.get(),
                                 keyboard: true,
                             });
                             cx.notify();
@@ -317,20 +379,6 @@ impl MuseWindow {
             .and_then(|proxy| self.workspace.proxy_profile(proxy))
             .map(|profile| profile.name.clone())
             .unwrap_or_else(|| account.network.label().to_owned());
-        let filled = used.map_or(0, |value| {
-            if value <= 0. {
-                0
-            } else {
-                ((value / 100. * SEGMENTS as f64).round() as usize).clamp(1, SEGMENTS)
-            }
-        });
-        let segment_color = if exhausted {
-            0xF04438
-        } else if used.is_some_and(|value| value >= 90.) {
-            0xF79009
-        } else {
-            colors().blue
-        };
         div()
             .w_full()
             .p_3()
@@ -344,22 +392,81 @@ impl MuseWindow {
                     .w_full()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap_2()
                     .child(
                         div()
                             .relative()
                             .flex_none()
                             .when(exhausted && !active, |element| element.opacity(0.6))
-                            .child(self.account_avatar(account, 36., active)),
+                            .child(self.account_avatar(account, 40., active)),
                     )
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(px(14.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .whitespace_normal()
-                            .child(account.name.clone()),
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .line_clamp(1)
+                                            .text_ellipsis()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(account.name.clone()),
+                                    )
+                                    .when_some(plan, |row, plan| {
+                                        row.child(
+                                            div()
+                                                .flex_none()
+                                                .max_w(px(70.))
+                                                .line_clamp(1)
+                                                .text_ellipsis()
+                                                .px_1()
+                                                .rounded_sm()
+                                                .bg(rgb(colors().fill))
+                                                .text_size(px(11.))
+                                                .text_color(rgb(colors().secondary))
+                                                .child(plan),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(px(11.))
+                                            .text_color(rgb(colors().secondary))
+                                            .child(status),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        glyph(
+                                            if proxied { "shield-check" } else { "world" },
+                                            12.,
+                                            colors().secondary,
+                                        )
+                                        .flex_none(),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .line_clamp(1)
+                                            .text_ellipsis()
+                                            .text_size(px(11.))
+                                            .text_color(rgb(colors().secondary))
+                                            .child(network),
+                                    ),
+                            ),
                     )
                     .child(icon_button(
                         "account-refresh",
@@ -384,41 +491,6 @@ impl MuseWindow {
                         }),
                     )),
             )
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .text_size(px(11.))
-                    .text_color(rgb(colors().secondary))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(glyph(
-                                if proxied { "shield-check" } else { "world" },
-                                12.,
-                                colors().muted,
-                            ))
-                            .child(div().flex_1().min_w_0().child(network)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .when_some(plan, |element, plan| {
-                                element.child(
-                                    div().px_1().rounded_sm().bg(rgb(colors().fill)).child(plan),
-                                )
-                            })
-                            .child(status)
-                            .when_some(stale, |element, label| element.child(label))
-                            .when(refreshing, |element| element.child("正在刷新")),
-                    ),
-            )
             // Quota label, percentage and segmented meter.
             .child(
                 div()
@@ -434,14 +506,19 @@ impl MuseWindow {
                                 div()
                                     .text_size(px(12.))
                                     .text_color(rgb(colors().secondary))
-                                    .child("套餐额度 已用"),
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child("套餐额度 已用")
+                                    .when_some(stale, |row, label| row.child(label))
+                                    .when(refreshing, |row| row.child("正在刷新")),
                             )
                             .child(
                                 div()
                                     .text_size(px(12.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(rgb(if exhausted {
-                                        0xD92D20
+                                        colors().danger
                                     } else if used.is_some() {
                                         colors().blue
                                     } else {
@@ -450,17 +527,7 @@ impl MuseWindow {
                                     .child(percent),
                             ),
                     )
-                    .child(div().w_full().h(px(8.)).flex().gap(px(3.)).children(
-                        (0..SEGMENTS).map(|index| {
-                            div().flex_1().h_full().rounded(px(2.)).bg(rgb(
-                                if exhausted || index < filled {
-                                    segment_color
-                                } else {
-                                    colors().track
-                                },
-                            ))
-                        }),
-                    )),
+                    .child(quota_meter(used, 8., 3.)),
             )
             // Reset date and invitation quota.
             .child(
@@ -768,26 +835,6 @@ impl MuseWindow {
                             .into()
                     })
                 }),
-        )
-    }
-
-    /// Selected account card: a white raised surface with a hairline border and
-    /// soft shadow under the content. It fades and rises in on every switch.
-    fn card_selection_layer(&self, id: SharedString) -> AnyElement {
-        crate::motion::animate(
-            div()
-                .id(id)
-                .absolute()
-                .inset_0()
-                .rounded_xl()
-                .border_1()
-                .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
-                .bg(rgb(colors().panel))
-                .shadow_sm(),
-            self.navigation_transition,
-            self.motion_policy,
-            crate::motion::MotionKind::Modal,
-            3.,
         )
     }
 
@@ -1414,7 +1461,6 @@ impl MuseWindow {
         diameter: f32,
         selected: bool,
     ) -> Div {
-        let fallback = avatar(&account.name, selected, diameter);
         // Still first frame by default; the clip plays only while the pointer is
         // over this account's card, timed by the window's own clock.
         let index = self
@@ -1425,25 +1471,23 @@ impl MuseWindow {
                     as usize
             });
         if let Some(image) = self.avatars.frame(account.id, index) {
-            fallback.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded_full()
-                    .overflow_hidden()
-                    .bg(rgb(tone(0xF5F6F6, 0x2B2B31)))
-                    .child(
-                        img(image.clone())
-                            .id(SharedString::from(format!(
-                                "avatar-{}-{:?}",
-                                account.id, image.id
-                            )))
-                            .size_full()
-                            .object_fit(ObjectFit::Contain),
-                    ),
-            )
+            div()
+                .size(px(diameter))
+                .flex_none()
+                .rounded_full()
+                .bg(rgb(tone(0xF5F6F6, 0x2B2B31)))
+                .child(
+                    img(image.clone())
+                        .id(SharedString::from(format!(
+                            "avatar-{}-{:?}",
+                            account.id, image.id
+                        )))
+                        .size_full()
+                        .rounded_full()
+                        .object_fit(ObjectFit::Cover),
+                )
         } else {
-            fallback
+            avatar(&account.name, selected, diameter)
         }
     }
 }
@@ -1451,6 +1495,24 @@ impl MuseWindow {
 #[cfg(test)]
 mod tests {
     use super::{extra_pill, used_percent};
+    #[test]
+    fn near_full_quota_does_not_claim_exhaustion() {
+        let observation = muse_core::QuotaObservation::new(99.8, 100., "%", 1, None).unwrap();
+        let (_, exhausted, label) = super::plan_usage(&muse_core::QuotaState::Known(observation));
+        assert!(!exhausted);
+        assert_eq!(label, ">99%");
+        for (used, expected) in [
+            (0., 0),
+            (0.2, 1),
+            (37., 7),
+            (97.5, 19),
+            (99.8, 19),
+            (100., 20),
+        ] {
+            assert_eq!(super::filled_segments(used), expected);
+        }
+    }
+
     #[test]
     fn unknown_and_expired_quota_never_become_zero_usage() {
         assert_eq!(used_percent(&muse_core::QuotaState::Unknown), None);

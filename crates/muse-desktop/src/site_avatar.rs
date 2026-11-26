@@ -49,6 +49,16 @@ fn signature(value: impl Hash) -> u64 {
     value.hash(&mut hash);
     hash.finish()
 }
+fn center_square(pixels: image::RgbaImage) -> image::RgbaImage {
+    let (width, height) = pixels.dimensions();
+    let edge = width.min(height);
+    if width == height {
+        pixels
+    } else {
+        image::imageops::crop_imm(&pixels, (width - edge) / 2, (height - edge) / 2, edge, edge)
+            .to_image()
+    }
+}
 impl AvatarCache {
     pub fn load(root: &Path, workspace: &muse_core::Workspace) -> Self {
         let directory = root.join("account-cache");
@@ -89,7 +99,9 @@ impl AvatarCache {
         let Some(pixels) = decode_frame(data) else {
             return false;
         };
-        let image = Arc::new(RenderImage::new(vec![image::Frame::new(pixels)]));
+        let image = Arc::new(RenderImage::new(vec![image::Frame::new(center_square(
+            pixels,
+        ))]));
         self.0.insert(
             id,
             Avatar {
@@ -132,6 +144,7 @@ impl AvatarCache {
                 return false;
             }
             dimensions = Some(pixels.dimensions());
+            let pixels = center_square(pixels);
             if let Some(first) = frames.first() {
                 let first: &image::Frame = first;
                 differs |= first.buffer() != &pixels;

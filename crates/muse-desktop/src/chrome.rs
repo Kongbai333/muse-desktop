@@ -944,11 +944,7 @@ impl MuseWindow {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(avatar(
-                        &name,
-                        true,
-                        42.,
-                    ))
+                    .child(account.map_or_else(|| avatar(&name, true, 42.), |owner| self.account_avatar(owner, 42., true)))
                     .child(
                         div()
                             .flex_1()
@@ -1364,7 +1360,7 @@ impl MuseWindow {
 
 impl Render for MuseWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.prepare_account_rows(cx);
+        self.prepare_account_rows(window, cx);
         if self.has_browser_overlay() || self.sidebar_dragging {
             self.clear_account_detail(cx);
         }
@@ -1477,8 +1473,18 @@ impl Render for MuseWindow {
                     } else {
                         window.focus_next();
                     }
+                    this.account_keyboard_focus = this
+                        .account_focus
+                        .iter()
+                        .find_map(|(id, handle)| handle.is_focused(window).then_some(*id));
                     this.clear_account_detail(cx);
+                    cx.notify();
                     cx.stop_propagation();
+                }
+            }))
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                if this.account_keyboard_focus.take().is_some() {
+                    cx.notify();
                 }
             }))
             .on_mouse_move(cx.listener(Self::drag_sidebar))
