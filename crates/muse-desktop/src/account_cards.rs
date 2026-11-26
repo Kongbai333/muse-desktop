@@ -3,7 +3,42 @@ use super::group_ui::GroupOperation;
 use super::*;
 use crate::account_groups::UNGROUPED;
 use gpui::MouseDownEvent;
+use std::{cell::Cell, rc::Rc};
 use uuid::Uuid;
+
+#[derive(Clone, Copy, PartialEq)]
+enum SidebarItem {
+    Account(AccountId),
+    Group(Option<Uuid>),
+}
+
+struct DragPreview {
+    label: String,
+    offset: Point<Pixels>,
+    _cancel: Subscription,
+}
+
+impl Render for DragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .pl(self.offset.x + px(12.))
+            .pt(self.offset.y + px(12.))
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(colors().panel))
+                    .border_1()
+                    .border_color(rgb(colors().line))
+                    .text_size(px(12.))
+                    .text_color(rgb(colors().secondary))
+                    .max_w(px(160.))
+                    .truncate()
+                    .child(self.label.clone()),
+            )
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct AccountDetail {
@@ -159,6 +194,92 @@ fn account_row_summary(account: &muse_core::Account) -> Div {
 }
 
 impl MuseWindow {
+    #[inline(never)]
+    fn sidebar_drag_target(
+        &self,
+        element: Stateful<Div>,
+        target: SidebarItem,
+        label: &str,
+        center_y: Rc<Cell<Pixels>>,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        use SidebarItem::{Account, Group};
+        let label = label.to_owned();
+        let view = cx.entity().downgrade();
+        let measure = center_y.clone();
+        let indicator = center_y.clone();
+        element
+            .relative()
+            .child(
+                canvas(
+                    move |area, _, _| measure.set(area.center().y),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .when(target != Group(None), |element| {
+                element.on_drag(target, move |_, offset, window, cx| {
+                    let _ = view.update(cx, |this, cx| this.clear_account_detail(cx));
+                    let window_id = window.window_handle().window_id();
+                    let cancel = cx.intercept_keystrokes(move |event, window, cx| {
+                        if window.window_handle().window_id() == window_id
+                            && event.keystroke.key == "escape"
+                            && cx.stop_active_drag(window)
+                        {
+                            cx.stop_propagation();
+                        }
+                    });
+                    cx.new(|_| DragPreview {
+                        label: label.clone(),
+                        offset,
+                        _cancel: cancel,
+                    })
+                })
+            })
+            .drag_over::<SidebarItem>(move |style, source, window, _| match (*source, target) {
+                (Account(_), Group(_)) => style
+                    .bg(rgb(colors().fill_hover))
+                    .border_1()
+                    .border_color(rgb(colors().blue)),
+                (Account(_), Account(_)) | (Group(Some(_)), Group(Some(_)))
+                    if *source != target =>
+                {
+                    if window.mouse_position().y < indicator.get() {
+                        style.border_t_2()
+                    } else {
+                        style.border_b_2()
+                    }
+                    .border_color(rgb(colors().blue))
+                }
+                _ => style,
+            })
+            .on_drop(cx.listener(move |this, source: &SidebarItem, window, cx| {
+                let after = window.mouse_position().y >= center_y.get();
+                let result = this.save_groups(|groups, accounts| {
+                    Ok(match (*source, target) {
+                        (Account(id), Account(neighbor)) if id != neighbor => groups.place_account(
+                            accounts,
+                            id,
+                            groups.membership(neighbor),
+                            Some((neighbor, after)),
+                        ),
+                        (Account(id), Group(group)) => {
+                            groups.place_account(accounts, id, group, None)
+                        }
+                        (Group(Some(id)), Group(Some(neighbor))) => {
+                            groups.place_group(id, neighbor, after)
+                        }
+                        _ => false,
+                    })
+                });
+                if let Err(error) = result {
+                    this.status = error;
+                }
+                cx.notify();
+            }))
+    }
+
     pub(super) fn prepare_account_rows(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.account_focus
             .retain(|id, _| self.workspace.account(*id).is_some());
@@ -183,8 +304,9 @@ impl MuseWindow {
     ) -> Stateful<Div> {
         let id = account.id;
         let active = !self.show_start_page && self.workspace.active_account_id() == Some(id);
-        let anchor_y = std::rc::Rc::new(std::cell::Cell::new(px(0.)));
-        div()
+        let anchor_y = Rc::new(Cell::new(px(0.)));
+        let center_y = anchor_y.clone();
+        let row = div()
             .id(id)
             .relative()
             .flex_none()
@@ -193,15 +315,6 @@ impl MuseWindow {
             .mx_2()
             .mb_1()
             .track_focus(&self.account_focus[&id])
-            .child({
-                let anchor_y = anchor_y.clone();
-                canvas(
-                    move |area, _, _| anchor_y.set(area.center().y),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0()
-            })
             .when(!active, |element| {
                 element.hover(|style| style.bg(rgb(colors().fill_hover)))
             })
@@ -242,7 +355,8 @@ impl MuseWindow {
             })
             .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                 this.hover_account(id, *hovered, window, cx)
-            }))
+            }));
+        self.sidebar_drag_target(row, SidebarItem::Account(id), &account.name, center_y, cx)
             .on_click(cx.listener(move |this, _, window, cx| this.select_account(id, window, cx)))
             .on_mouse_down(
                 MouseButton::Right,
@@ -566,6 +680,9 @@ impl MuseWindow {
         cx: &mut Context<Self>,
     ) {
         if hovered {
+            if cx.has_active_drag() {
+                return;
+            }
             // A page still frame is prepared while the pointer is on the
             // sidebar, so menus and dialogs can cover the page without a gap.
             self.prefetch_page_snapshot();
@@ -1027,21 +1144,22 @@ impl MuseWindow {
 
     fn render_account_sections(&self, compact: bool, cx: &Context<Self>) -> Vec<AnyElement> {
         let mut accounts_by_group: HashMap<Option<Uuid>, Vec<&muse_core::Account>> = HashMap::new();
-        for account in &self.workspace.accounts {
+        for account in self
+            .account_groups
+            .ordered_accounts(&self.workspace.accounts)
+        {
             accounts_by_group
                 .entry(self.account_groups.membership(account.id))
                 .or_default()
                 .push(account);
         }
-        self.account_groups
-            .groups
-            .iter()
-            .map(|group| (Some(group.id), group.name.as_str(), group.collapsed))
-            .chain(std::iter::once((
-                None,
-                UNGROUPED,
-                self.account_groups.ungrouped_collapsed,
-            )))
+        std::iter::once((None, UNGROUPED, self.account_groups.ungrouped_collapsed))
+            .chain(
+                self.account_groups
+                    .groups
+                    .iter()
+                    .map(|group| (Some(group.id), group.name.as_str(), group.collapsed)),
+            )
             .map(|(id, name, collapsed)| {
                 let accounts = accounts_by_group.remove(&id).unwrap_or_default();
                 self.render_account_section(id, name, collapsed, &accounts, compact, cx)
@@ -1129,7 +1247,13 @@ impl MuseWindow {
                     .gap_1()
                     .when(compact, |element| element.mx_1())
                     .when(!compact, |element| element.mx_3())
-                    .child(header)
+                    .child(self.sidebar_drag_target(
+                        header,
+                        SidebarItem::Group(id),
+                        name,
+                        Rc::new(Cell::new(px(0.))),
+                        cx,
+                    ))
                     .when_some(id.filter(|_| !compact), |element, id| {
                         element.child(icon_button(
                             "edit-group",
