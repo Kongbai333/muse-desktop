@@ -1028,7 +1028,7 @@ impl MuseWindow {
                                 if node.revision.is_some() {
                                     "可绑定"
                                 } else {
-                                    "不支持此协议、配置或传输"
+                                    node.reason.as_deref().unwrap_or("不支持此协议、配置或传输")
                                 }
                             ))
                     }))

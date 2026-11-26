@@ -1,6 +1,8 @@
 //! Authenticated, account-owned loopback proxy; never falls back to direct.
 
 mod connect_response;
+mod node;
+pub use node::{FixedNode, NodeKind, WebSocketTransport};
 pub mod trace;
 mod transport;
 use trace::{
@@ -68,6 +70,9 @@ pub enum ProxyProtocol {
     Https,
     Socks5,
     Shadowsocks,
+    Vless,
+    Vmess,
+    Trojan,
 }
 
 impl ProxyProtocol {
@@ -79,6 +84,9 @@ impl ProxyProtocol {
             Self::Https => "https",
             Self::Socks5 => "socks5",
             Self::Shadowsocks => "ss",
+            Self::Vless => "vless",
+            Self::Vmess => "vmess",
+            Self::Trojan => "trojan",
         }
     }
 
@@ -88,6 +96,9 @@ impl ProxyProtocol {
             Self::Https => "HTTPS",
             Self::Socks5 => "SOCKS5",
             Self::Shadowsocks => "Shadowsocks AEAD",
+            Self::Vless => "VLESS",
+            Self::Vmess => "VMess AEAD",
+            Self::Trojan => "Trojan",
         }
     }
 
@@ -97,7 +108,16 @@ impl ProxyProtocol {
             Self::Https => 443,
             Self::Socks5 => 1080,
             Self::Shadowsocks => 8388,
+            Self::Vless | Self::Vmess | Self::Trojan => 443,
         }
+    }
+
+    pub fn subscription_only(self) -> bool {
+        !Self::ALL.contains(&self)
+    }
+
+    fn carries_target(self) -> bool {
+        !matches!(self, Self::Http | Self::Https)
     }
 }
 
@@ -127,7 +147,7 @@ impl std::fmt::Display for ProxyError {
             Self::Invalid => "代理配置格式无效",
             Self::Unsupported => "代理协议仅支持 HTTP、HTTPS 或 SOCKS5",
             Self::Connect => "无法连接上游代理；未使用直连",
-            Self::Tls => "HTTPS 代理的 TLS 连接或证书验证失败；未使用直连",
+            Self::Tls => "上游代理的 TLS 连接或证书验证失败；未使用直连",
             Self::Authentication => "上游代理认证失败；未使用直连",
             Self::Protocol => "代理响应无效",
             Self::Timeout => "代理连接超时；未使用直连",
@@ -151,6 +171,7 @@ impl std::error::Error for ProxyError {}
 
 #[derive(Clone)]
 pub struct Upstream {
+    node: Option<Arc<FixedNode>>,
     ss: Option<Arc<shadowsocks::ServerConfig>>,
     fixed_node: bool,
     protocol: ProxyProtocol,
@@ -172,6 +193,20 @@ impl Upstream {
     pub fn parse(input: &str) -> Result<Self, ProxyError> {
         if input.len() > 16384 {
             return Err(ProxyError::Invalid);
+        }
+        if input.starts_with('{') {
+            let node: FixedNode = serde_json::from_str(input).map_err(|_| ProxyError::Invalid)?;
+            node.validate()?;
+            return Ok(Self {
+                protocol: node.kind.protocol(),
+                host: node.host.clone(),
+                port: node.port,
+                node: Some(Arc::new(node)),
+                ss: None,
+                fixed_node: true,
+                credentials: None,
+                authorization: None,
+            });
         }
         let normalized = if input.contains("://") {
             input.to_owned()
@@ -263,6 +298,7 @@ impl Upstream {
                 })
             };
         Ok(Self {
+            node: None,
             ss,
             fixed_node: protocol == ProxyProtocol::Shadowsocks,
             protocol,
@@ -312,6 +348,7 @@ impl Upstream {
             self.port,
             &self.authorization,
             &self.credentials,
+            &self.node,
             transport::identity(),
         ))
     }
@@ -331,7 +368,7 @@ impl Upstream {
         TraceEvent::new(context, TraceStage::ProbeStart, TraceOutcome::Start).emit();
         let span = TraceSpan::new(context, TraceStage::ProbeEnd);
         let target = Authority::from_static("muse.ai:443");
-        let result = if self.ss.is_some() {
+        let result = if self.protocol.subscription_only() {
             Err(ProxyError::Unsupported)
         } else {
             connect_tunnel(self, &target, context).await.map(|_| ())
@@ -710,11 +747,10 @@ async fn handle(
     };
     let mut pending = TraceStage::ProviderTcp;
     let socket = match timeout(DEADLINE, async {
-        match upstream.protocol {
-            ProxyProtocol::Socks5 | ProxyProtocol::Shadowsocks => {
-                connect_socks(&upstream, &target, 80, context, &mut pending).await
-            }
-            _ => connect_http_proxy(&upstream, context, &mut pending).await,
+        if upstream.protocol.carries_target() {
+            connect_socks(&upstream, &target, 80, context, &mut pending).await
+        } else {
+            connect_http_proxy(&upstream, context, &mut pending).await
         }
     })
     .await
@@ -749,10 +785,7 @@ async fn handle(
         tokio::select! { biased; _ = cancel.cancelled() => {}, _ = connection => {} }
     });
     strip_hop(request.headers_mut());
-    if matches!(
-        upstream.protocol,
-        ProxyProtocol::Socks5 | ProxyProtocol::Shadowsocks
-    ) {
+    if upstream.protocol.carries_target() {
         let path = request
             .uri()
             .path_and_query()
@@ -816,10 +849,7 @@ async fn connect_tunnel(
     let tunnel = TraceSpan::new(context, TraceStage::TunnelEstablished);
     let mut pending = TraceStage::ProviderTcp;
     let result = timeout(DEADLINE, async {
-        if matches!(
-            upstream.protocol,
-            ProxyProtocol::Socks5 | ProxyProtocol::Shadowsocks
-        ) {
+        if upstream.protocol.carries_target() {
             return connect_socks(upstream, authority, 443, context, &mut pending)
                 .await
                 .map(|stream| (stream, Vec::new()));
@@ -879,7 +909,16 @@ async fn connect_http_proxy(
     if upstream.protocol == ProxyProtocol::Http {
         return Ok(socket);
     }
-    let name = ServerName::try_from(upstream.host.clone()).map_err(|_| ProxyError::Invalid)?;
+    verified_tls(socket, &upstream.host, context, pending).await
+}
+
+async fn verified_tls(
+    socket: UpstreamStream,
+    server_name: &str,
+    context: TraceContext,
+    pending: &mut TraceStage,
+) -> Result<UpstreamStream, ProxyError> {
+    let name = ServerName::try_from(server_name.to_owned()).map_err(|_| ProxyError::Invalid)?;
     let connector = HTTPS_CONNECTOR
         .get_or_init(|| {
             let mut roots = RootCertStore::empty();
@@ -921,6 +960,10 @@ async fn connect_socks(
         authority.host().trim_matches(['[', ']']),
         authority.port_u16().unwrap_or(default_port),
     );
+    if let Some(node) = &upstream.node {
+        let socket = verified_tls(socket, &node.server_name, context, pending).await?;
+        return node.connect(socket, target).await;
+    }
     if let Some(config) = &upstream.ss {
         use shadowsocks::{
             ProxyClientStream, config::ServerType, context::Context, relay::socks5::Address,

@@ -177,9 +177,9 @@ fn main() {
             } else {
                 upstream
             };
-            if upstream.protocol() == muse_proxy::ProxyProtocol::Shadowsocks {
+            if upstream.protocol().subscription_only() {
                 return Err(
-                    "Shadowsocks 需要实际目标流量验证，请在绑定账号中打开网页；未测试页面".into(),
+                    "此订阅协议需要实际目标流量验证，请在绑定账号中打开网页；未测试页面".into(),
                 );
             }
             let runtime = tokio::runtime::Builder::new_current_thread()

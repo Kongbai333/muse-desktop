@@ -18,14 +18,18 @@ use zeroize::Zeroizing;
 
 const LIMIT: usize = 1024 * 1024;
 const MAX_NODES: usize = 1000;
+mod modern;
 
 #[derive(Serialize, Deserialize)]
 struct PrivateData {
     url: String,
     labels: HashMap<Uuid, String>,
+    #[serde(default)]
+    reasons: HashMap<Uuid, String>,
 }
 
 pub struct Entry {
+    reason: Option<&'static str>,
     label: String,
     protocol: &'static str,
     endpoint: Option<Zeroizing<String>>,
@@ -40,6 +44,7 @@ pub fn hydrate(root: &Path, workspace: &mut Workspace) {
     for sub in &mut workspace.subscriptions {
         if let Ok(mut data) = private(root, sub) {
             for node in &mut sub.nodes {
+                node.reason = data.reasons.remove(&node.id);
                 node.name = data
                     .labels
                     .remove(&node.id)
@@ -172,6 +177,9 @@ fn share(line: &str) -> Entry {
     let (uri, fragment) = line.split_once('#').unwrap_or((line, ""));
     let (scheme, body) = uri.split_once("://").unwrap_or(("", ""));
     let kind = protocol(scheme);
+    if modern::supports(kind) {
+        return modern::share(kind, uri, fragment);
+    }
     let route = (|| {
         if uri.len() > 16384 || uri.contains('?') || uri.chars().any(char::is_control) {
             return None;
@@ -208,6 +216,7 @@ fn share(line: &str) -> Entry {
         }
     })();
     Entry {
+        reason: None,
         label: label(&unescape(fragment).unwrap_or_default()),
         protocol: kind,
         endpoint: route,
@@ -217,6 +226,9 @@ fn share(line: &str) -> Entry {
 fn clash(value: &Value) -> Entry {
     let kind = protocol(value.get("type").and_then(Value::as_str).unwrap_or(""));
     let mut kind = kind;
+    if modern::supports(kind) {
+        return modern::clash(kind, value);
+    }
     let route = (|| {
         let map = value.as_mapping()?;
         for (key, value) in map {
@@ -250,6 +262,7 @@ fn clash(value: &Value) -> Entry {
         )
     })();
     Entry {
+        reason: None,
         label: label(value.get("name").and_then(Value::as_str).unwrap_or("")),
         protocol: kind,
         endpoint: route,
@@ -348,6 +361,7 @@ pub fn replace(
     };
     let mut staged = Vec::new();
     let mut labels = HashMap::new();
+    let mut reasons = HashMap::new();
     let mut seen = HashSet::new();
     let result = (|| {
         for entry in entries {
@@ -368,7 +382,12 @@ pub fn replace(
                 (Uuid::new_v4(), None)
             };
             labels.insert(id, entry.label.clone());
+            let reason = entry.reason.map(str::to_owned);
+            if let Some(reason) = &reason {
+                reasons.insert(id, reason.clone());
+            }
             sub.nodes.push(SubscriptionNode {
+                reason,
                 id,
                 revision,
                 name: entry.label,
@@ -379,6 +398,7 @@ pub fn replace(
             serde_json::to_string(&PrivateData {
                 url: url.to_owned(),
                 labels,
+                reasons,
             })
             .map_err(|_| "订阅保存失败")?,
         );

@@ -35,10 +35,13 @@ impl AccountRoute {
                 ProxyProtocol::Http => RoutePath::SystemHttpBridge,
                 ProxyProtocol::Https => RoutePath::SystemHttpsBridge,
                 ProxyProtocol::Socks5 => RoutePath::SystemSocks5Bridge,
-                ProxyProtocol::Shadowsocks => return Err("订阅节点不支持前置代理".into()),
+                _ => return Err("订阅节点不支持前置代理".into()),
             }
         } else {
             match (upstream.protocol(), authenticated, scoped_auth) {
+                (ProxyProtocol::Vless | ProxyProtocol::Vmess | ProxyProtocol::Trojan, _, _) => {
+                    RoutePath::FixedTlsBridge
+                }
                 (ProxyProtocol::Shadowsocks, _, _) => RoutePath::ShadowsocksBridge,
                 (ProxyProtocol::Socks5, true, _) => RoutePath::Socks5AuthBridge,
                 (ProxyProtocol::Http, true, false) => RoutePath::HttpAuthBridge,
@@ -61,7 +64,7 @@ impl AccountRoute {
         } else {
             upstream.host().to_owned()
         };
-        let endpoint = Url::parse(&format!(
+        let mut endpoint = Url::parse(&format!(
             "{}://{host}:{}/",
             upstream.protocol().scheme(),
             upstream.port()
@@ -70,6 +73,7 @@ impl AccountRoute {
         let bridge = if matches!(
             path,
             RoutePath::ShadowsocksBridge
+                | RoutePath::FixedTlsBridge
                 | RoutePath::Socks5AuthBridge
                 | RoutePath::HttpAuthBridge
                 | RoutePath::HttpsAuthBridge
@@ -81,6 +85,10 @@ impl AccountRoute {
                 ProxyBridge::start_traced(upstream.clone(), context).map_err(|e| e.to_string())?,
             );
             context.bridge = bridge.trace_context().bridge;
+            if path == RoutePath::FixedTlsBridge {
+                endpoint = Url::parse(&format!("http://{}/", bridge.address()))
+                    .map_err(|_| "本机桥端点无效")?;
+            }
             Some(bridge)
         } else {
             None
@@ -105,6 +113,7 @@ impl AccountRoute {
     }
     pub fn label(&self) -> &'static str {
         match self.context.route_path {
+            Some(RoutePath::FixedTlsBridge) => self.upstream.protocol().label(),
             Some(RoutePath::ShadowsocksBridge) => "固定 Shadowsocks AEAD 节点",
             Some(RoutePath::SystemHttpBridge) => "系统回环前置 → 账号 HTTP 代理",
             Some(RoutePath::SystemHttpsBridge) => "系统回环前置 → 账号 HTTPS 代理",
@@ -138,10 +147,11 @@ impl AccountRoute {
     /// Reused for each normal tab, cookie reader, and popup reopened as a tab.
     pub fn install(self: &Arc<Self>, view: &WebView, mut context: Context) -> Result<(), String> {
         context.route_path = self.context.route_path;
-        if let Some(bridge) = &self.bridge {
+        let scoped_bridge = self.context.route_path == Some(RoutePath::FixedTlsBridge);
+        if !scoped_bridge && let Some(bridge) = &self.bridge {
             return super::browser::install_local_auth(view, bridge.shared_auth(), context);
         }
-        if self.upstream.credentials().is_none() {
+        if !scoped_bridge && self.upstream.credentials().is_none() {
             return Ok(());
         }
         let mut actual_version = PWSTR::null();
@@ -205,10 +215,17 @@ impl AccountRoute {
                         let matches = route.proxy_challenge(&uri);
                         // Do not answer ordinary origin 401s, even with the same realm.
                         // Cancel unmatched challenges to avoid an accidental browser UI.
-                        let accepted =
-                            matches && challenge.to_ascii_lowercase().starts_with("basic ");
+                        let accepted = matches
+                            && route.bridge.as_ref().map_or_else(
+                                || challenge.to_ascii_lowercase().starts_with("basic "),
+                                |bridge| challenge == bridge.auth().challenge(),
+                            );
                         if accepted {
-                            if let Some((user, secret)) = route.upstream.credentials() {
+                            let credentials = route.bridge.as_ref().map_or_else(
+                                || route.upstream.credentials(),
+                                |bridge| Some((bridge.auth().username(), bridge.auth().secret())),
+                            );
+                            if let Some((user, secret)) = credentials {
                                 let response = args.Response()?;
                                 response.SetUserName(&HSTRING::from(user))?;
                                 response.SetPassword(&HSTRING::from(secret))?;

@@ -43,6 +43,16 @@ and its AEAD dependencies. Clash YAML uses serde_yaml_ng 0.10.0
 License texts for the additional Windows dependencies are under LICENSES/.
 No protocol executable, plugin, external provider or script is downloaded.
 
+VLESS, VMess AEAD and Trojan use the Rust wire codecs in marmo-proto and
+marmo-net 0.0.4, licensed under MIT or Apache-2.0. The published crates
+identify upstream revision `5227b563654fb442f490101c31babde0571b3e16`:
+https://github.com/mogeko/marmo/tree/5227b563654fb442f490101c31babde0571b3e16
+WebSocket uses tokio-tungstenite 0.30.0 (MIT) and tungstenite 0.30.0
+(MIT or Apache-2.0). All three clients, WebSocket, rustls and RustCrypto
+are linked into Muse.exe; crate archive checksums are pinned in Cargo.lock.
+The account bridge runs no third-party server, resolver, rules or executable.
+Xray-core was used only as an independent test peer and is not shipped.
+
 Official sources:
 https://github.com/dizda/fast-socks5
 https://github.com/tokio-rs/tokio
