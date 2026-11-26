@@ -203,6 +203,18 @@ impl MuseWindow {
         let Some(account) = self.workspace.active_account_id() else {
             return;
         };
+        let trace_context = muse_proxy::trace::Context {
+            account: crate::proxy_trace::account(account),
+            action: muse_proxy::trace::new_id(),
+            source: Some(muse_proxy::trace::Source::AccountTest),
+            ..Default::default()
+        };
+        muse_proxy::trace::Event::new(
+            trace_context,
+            muse_proxy::trace::Stage::ManualAction,
+            muse_proxy::trace::Outcome::Start,
+        )
+        .emit();
         let draft = self.proxy_editor.draft(cx);
         let upstream = match draft
             .proxy_url()
@@ -210,6 +222,12 @@ impl MuseWindow {
         {
             Ok(upstream) => upstream,
             Err(error) => {
+                muse_proxy::trace::Event::new(
+                    trace_context,
+                    muse_proxy::trace::Stage::ProbeEnd,
+                    muse_proxy::trace::Outcome::Configuration,
+                )
+                .emit();
                 self.proxy_editor.message = error;
                 self.proxy_editor.good = false;
                 cx.notify();
@@ -230,7 +248,7 @@ impl MuseWindow {
                     .map_err(|_| "无法创建代理测试任务".to_owned())
                     .and_then(|runtime| {
                         runtime
-                            .block_on(upstream.probe())
+                            .block_on(upstream.probe_traced(trace_context))
                             .map_err(|error| error.to_string())
                     })
                     .map(|()| started.elapsed().as_millis());
@@ -304,8 +322,9 @@ impl MuseWindow {
             match result.result {
                 Ok(ms) => {
                     self.proxy_editor.good = true;
-                    self.proxy_editor.message =
-                        format!("muse.ai:443 隧道建立通过 · {ms} ms；未验证目标 TLS 或页面访问");
+                    self.proxy_editor.message = format!(
+                        "兼容探测：muse.ai:443 隧道通过 · {ms} ms；实际路由与页面请在账号窗口验证"
+                    );
                 }
                 Err(error) => {
                     self.proxy_editor.good = false;

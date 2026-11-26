@@ -1113,8 +1113,20 @@ impl MuseWindow {
                             .text_color(rgb(colors().secondary))
                             .child(
                                 count
-                                    .map(|count| format!("已处理 {count} 次代理请求"))
-                                    .unwrap_or_else(|| "尚无代理请求".into()),
+                                    .map(|count| {
+                                        format!(
+                                            "{} · {count} 次桥接请求",
+                                            account
+                                                .and_then(|a| self.browsers.route_label(a.id))
+                                                .unwrap_or("兼容桥")
+                                        )
+                                    })
+                                    .unwrap_or_else(|| {
+                                        account
+                                            .and_then(|a| self.browsers.route_label(a.id))
+                                            .unwrap_or("路由尚未创建")
+                                            .into()
+                                    }),
                             ),
                     ),
             )

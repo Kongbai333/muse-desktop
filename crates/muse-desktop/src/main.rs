@@ -9,6 +9,7 @@ mod account_transfer;
 mod assets;
 mod browser;
 mod browser_locale;
+mod browser_route;
 mod cookie_export;
 mod cookie_import;
 mod diagnostics;
@@ -22,6 +23,7 @@ mod proxy_batch;
 mod proxy_pool;
 mod proxy_settings;
 mod proxy_smoke;
+mod proxy_trace;
 #[cfg(target_os = "windows")]
 mod secrets;
 mod session_guard;
@@ -72,6 +74,10 @@ fn main() {
     } else {
         launch_directory.join(data_dir)
     };
+    let _proxy_trace = proxy_trace::start(
+        &data_dir,
+        arguments.iter().any(|argument| argument == "--proxy-trace"),
+    );
     // The app has no console window, so a panic would otherwise close it silently.
     // Keep the last panic (message, source location and backtrace) next to the data.
     {
@@ -160,15 +166,22 @@ fn main() {
                 .build()
                 .map_err(|_| "无法创建网络检查任务")?;
             runtime
-                .block_on(upstream.probe())
+                .block_on(upstream.probe_traced(muse_proxy::trace::Context {
+                    account: proxy_trace::account(account.id),
+                    binding: Some(proxy_trace::binding(account.network)),
+                    proxy_required: Some(true),
+                    force_proxy: Some(account.network.force_proxy()),
+                    source: Some(muse_proxy::trace::Source::CliTest),
+                    ..Default::default()
+                }))
                 .map_err(|e| e.to_string())
         })();
         let report = match result {
             Ok(()) => {
-                serde_json::json!({"connected_through_upstream":true,"authentication_accepted":true,"direct_fallback":false,"scope":"tunnel_to_muse_ai_443","tls_verified":false,"page_access_verified":false})
+                serde_json::json!({"connected_through_upstream":true,"authentication_accepted":true,"direct_fallback":false,"scope":"tunnel_to_muse_ai_443","connection_layer":"rust_compatibility_probe","browser_page_verification":"account_window_only","tls_verified":false,"page_access_verified":false})
             }
             Err(error) => {
-                serde_json::json!({"connected_through_upstream":false,"error":error,"direct_fallback":false,"scope":"tunnel_to_muse_ai_443","tls_verified":false,"page_access_verified":false})
+                serde_json::json!({"connected_through_upstream":false,"error":error,"direct_fallback":false,"scope":"tunnel_to_muse_ai_443","connection_layer":"rust_compatibility_probe","browser_page_verification":"account_window_only","tls_verified":false,"page_access_verified":false})
             }
         };
         let _ = std::fs::write(

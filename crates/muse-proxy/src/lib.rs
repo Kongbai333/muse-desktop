@@ -1,5 +1,11 @@
 //! Authenticated, account-owned loopback proxy; never falls back to direct.
 
+pub mod trace;
+use trace::{
+    Context as TraceContext, Event as TraceEvent, Outcome as TraceOutcome, Source as TraceSource,
+    Span as TraceSpan, Stage as TraceStage,
+};
+
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use fast_socks5::{
@@ -116,7 +122,7 @@ impl std::error::Error for ProxyError {}
 #[derive(Clone)]
 pub struct Upstream {
     protocol: ProxyProtocol,
-    socks_auth: Option<(String, String)>,
+    credentials: Option<(String, String)>,
     host: String,
     port: u16,
     authorization: Option<String>,
@@ -195,17 +201,16 @@ impl Upstream {
             }
             Some((user, secret))
         };
-        let (authorization, socks_auth) = if protocol == ProxyProtocol::Socks5 {
-            (None, credentials)
+        let authorization = if protocol == ProxyProtocol::Socks5 {
+            None
         } else {
-            let basic = credentials.map(|(user, secret)| {
+            credentials.as_ref().map(|(user, secret)| {
                 format!("Basic {}", STANDARD.encode(format!("{user}:{secret}")))
-            });
-            (basic, None)
+            })
         };
         Ok(Self {
             protocol,
-            socks_auth,
+            credentials,
             host,
             port,
             authorization,
@@ -224,9 +229,51 @@ impl Upstream {
         self.port
     }
 
+    /// Memory-only credentials for a browser adapter that verifies proxy scope.
+    /// Never put these in browser arguments, URIs or diagnostic output.
+    pub fn credentials(&self) -> Option<(&str, &str)> {
+        self.credentials
+            .as_ref()
+            .map(|(user, secret)| (user.as_str(), secret.as_str()))
+    }
+
     pub async fn probe(&self) -> Result<(), ProxyError> {
+        self.probe_traced(TraceContext {
+            source: Some(TraceSource::CliTest),
+            ..TraceContext::default()
+        })
+        .await
+    }
+
+    pub fn trace_route_id(&self) -> u64 {
+        trace::route_id((
+            self.protocol as u8,
+            &self.host,
+            self.port,
+            &self.authorization,
+            &self.credentials,
+        ))
+    }
+
+    pub async fn probe_traced(&self, mut context: TraceContext) -> Result<(), ProxyError> {
+        context.route = self.trace_route_id();
+        if context.action == 0 {
+            context.action = trace::new_id();
+        }
+        context.protocol = Some(self.protocol);
+        context.destination = Some(trace::Destination::Muse);
+        context.target = trace::target_id("muse.ai", 443);
+        TraceEvent::new(context, TraceStage::ProbeStart, TraceOutcome::Start).emit();
+        let span = TraceSpan::new(context, TraceStage::ProbeEnd);
         let target = Authority::from_static("muse.ai:443");
-        connect_tunnel(self, &target).await.map(|_| ())
+        let result = connect_tunnel(self, &target, context).await.map(|_| ());
+        span.end(
+            result
+                .as_ref()
+                .map_or_else(|e| (*e).into(), |_| TraceOutcome::Ok),
+            None,
+        );
+        result
     }
 }
 
@@ -281,9 +328,18 @@ pub struct ProxyBridge {
     cancel: CancellationToken,
     tasks: TaskTracker,
     requests: Arc<AtomicU64>,
+    trace_context: TraceContext,
 }
 impl ProxyBridge {
     pub fn start(upstream: Upstream) -> Result<Self, ProxyError> {
+        Self::start_traced(upstream, TraceContext::default())
+    }
+    pub fn start_traced(upstream: Upstream, mut context: TraceContext) -> Result<Self, ProxyError> {
+        context.route = upstream.trace_route_id();
+        context.bridge = trace::new_id();
+        context.protocol = Some(upstream.protocol);
+        context.source = Some(TraceSource::Bridge);
+        TraceEvent::new(context, TraceStage::BridgeStart, TraceOutcome::Start).emit();
         let auth = Arc::new(LocalAuth::new());
         let cancel = CancellationToken::new();
         let tasks = TaskTracker::new();
@@ -299,10 +355,12 @@ impl ProxyBridge {
             let _lifetime = BridgeLifetime {
                 cancel: run_cancel.clone(),
                 tasks: run_tasks.clone(),
+                trace_context: context,
             };
             let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await {
                 Ok(listener) => listener,
-                Err(_) => {
+                Err(error) => {
+                    TraceSpan::new(context, TraceStage::BridgeError).io(&error);
                     let _ = ready_tx.send(Err(ProxyError::Connect));
                     return;
                 }
@@ -321,6 +379,7 @@ impl ProxyBridge {
                 run_cancel,
                 run_tasks,
                 shared_requests,
+                context,
             )
             .await;
         });
@@ -328,19 +387,26 @@ impl ProxyBridge {
             Ok(Ok(address)) => address,
             result => {
                 cancel.cancel();
-                return Err(result
+                let error = result
                     .ok()
                     .and_then(Result::err)
-                    .unwrap_or(ProxyError::Timeout));
+                    .unwrap_or(ProxyError::Timeout);
+                TraceEvent::new(context, TraceStage::BridgeError, error.into()).emit();
+                return Err(error);
             }
         };
+        TraceEvent::new(context, TraceStage::BridgeStart, TraceOutcome::Ok).emit();
         Ok(Self {
             address,
             auth,
             cancel,
             tasks,
             requests,
+            trace_context: context,
         })
+    }
+    pub fn trace_context(&self) -> TraceContext {
+        self.trace_context
     }
     pub fn request_count(&self) -> u64 {
         self.requests.load(Ordering::Relaxed)
@@ -375,11 +441,18 @@ impl Drop for ProxyBridge {
 struct BridgeLifetime {
     cancel: CancellationToken,
     tasks: TaskTracker,
+    trace_context: TraceContext,
 }
 impl Drop for BridgeLifetime {
     fn drop(&mut self) {
         self.cancel.cancel();
         self.tasks.close();
+        TraceEvent::new(
+            self.trace_context,
+            TraceStage::BridgeEnd,
+            TraceOutcome::Stopped,
+        )
+        .emit();
     }
 }
 
@@ -390,6 +463,7 @@ async fn run(
     cancel: CancellationToken,
     tasks: TaskTracker,
     requests: Arc<AtomicU64>,
+    context: TraceContext,
 ) {
     let permits = Arc::new(Semaphore::new(96));
     let tunnels = Arc::new(Semaphore::new(96));
@@ -398,14 +472,14 @@ async fn run(
             biased;
             _ = cancel.cancelled() => break,
             result = listener.accept() => {
-                let Ok((socket, peer)) = result else { break; };
+                let (socket, peer) = match result {Ok(pair)=>pair,Err(error)=>{TraceSpan::new(context,TraceStage::BridgeError).io(&error);break;}};
                 if !peer.ip().is_loopback() { continue; }
                 let Ok(permit) = permits.clone().try_acquire_owned() else { continue; };
                 let upstream = upstream.clone(); let auth = auth.clone(); let connection_stop = cancel.clone(); let tunnels = tunnels.clone(); let requests=requests.clone(); let child_tasks = tasks.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
                     let service_stop = connection_stop.clone();
-                    let service = service_fn(move |request| handle(request, upstream.clone(), auth.clone(), service_stop.clone(), child_tasks.clone(), tunnels.clone(), requests.clone()));
+                    let service = service_fn(move |request| handle(request, upstream.clone(), auth.clone(), service_stop.clone(), child_tasks.clone(), tunnels.clone(), requests.clone(),context));
                     let mut builder = hyper::server::conn::http1::Builder::new();
                     builder.keep_alive(false).half_close(true).max_buf_size(MAX_HEAD).timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(DEADLINE);
                     let connection = builder.serve_connection(TokioIo::new(socket), service).with_upgrades();
@@ -465,13 +539,23 @@ async fn handle(
     tasks: TaskTracker,
     tunnels: Arc<Semaphore>,
     requests: Arc<AtomicU64>,
+    mut context: TraceContext,
 ) -> Result<Response<Body>, Infallible> {
+    context.inbound = trace::new_id();
+    context.destination = request
+        .uri()
+        .authority()
+        .map(|a| trace::Destination::from_host(a.host()));
+    context.target = request.uri().authority().map_or(0, |a| {
+        trace::target_id(a.host(), a.port_u16().unwrap_or(80))
+    });
     let values: Vec<_> = request
         .headers()
         .get_all(header::PROXY_AUTHORIZATION)
         .iter()
         .collect();
     if values.len() != 1 || values[0].to_str().ok() != Some(auth.authorization.as_str()) {
+        TraceEvent::new(context, TraceStage::LocalAuth, TraceOutcome::Challenge).emit();
         let mut response = full(
             StatusCode::PROXY_AUTHENTICATION_REQUIRED,
             "Local proxy authentication required",
@@ -483,6 +567,16 @@ async fn handle(
         return Ok(response);
     }
     requests.fetch_add(1, Ordering::Relaxed);
+    TraceEvent::new(
+        context,
+        if request.method() == hyper::Method::CONNECT {
+            TraceStage::InboundConnect
+        } else {
+            TraceStage::InboundHttp
+        },
+        TraceOutcome::Start,
+    )
+    .emit();
     if request.method() == hyper::Method::CONNECT {
         let Ok(tunnel_permit) = tunnels.try_acquire_owned() else {
             return Ok(full(
@@ -499,22 +593,26 @@ async fn handle(
         {
             return Ok(full(StatusCode::BAD_REQUEST, "Invalid CONNECT target"));
         }
-        let (upstream, prefix) = match connect_tunnel(&upstream, authority).await {
+        let (upstream, prefix) = match connect_tunnel(&upstream, authority, context).await {
             Ok(connection) => connection,
             Err(error) => return Ok(full(StatusCode::BAD_GATEWAY, &error.to_string())),
         };
         let upgrade = hyper::upgrade::on(&mut request);
         tasks.spawn(async move {
             let _permit = tunnel_permit;
+            let relay=TraceSpan::new(context,TraceStage::RelayEnd);
             tokio::select! {
                 biased;
-                _ = cancel.cancelled() => {},
+                _ = cancel.cancelled() => {relay.end(TraceOutcome::Cancelled,None);},
                 _ = async move {
-                    if let Ok(upgraded) = upgrade.await {
+                    match upgrade.await { Ok(upgraded) => {
                         let mut client = TokioIo::new(upgraded);
                         let mut upstream = upstream;
-                        if client.write_all(&prefix).await.is_ok() { let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await; }
-                    }
+                        match client.write_all(&prefix).await {
+                            Ok(())=>match tokio::io::copy_bidirectional(&mut client, &mut upstream).await {Ok(_)=>relay.end(TraceOutcome::Eof,None),Err(error)=>relay.io(&error)},
+                            Err(error)=>relay.io(&error)
+                        }
+                    },Err(_)=>relay.end(TraceOutcome::Protocol,None)}
                 } => {}
             }
         });
@@ -536,17 +634,27 @@ async fn handle(
             "Only absolute HTTP requests or CONNECT are supported",
         ));
     };
+    let mut pending = TraceStage::ProviderTcp;
     let socket = match timeout(DEADLINE, async {
         match upstream.protocol {
-            ProxyProtocol::Socks5 => connect_socks(&upstream, &target, 80).await,
-            _ => connect_http_proxy(&upstream).await,
+            ProxyProtocol::Socks5 => {
+                connect_socks(&upstream, &target, 80, context, &mut pending).await
+            }
+            _ => connect_http_proxy(&upstream, context, &mut pending).await,
         }
     })
     .await
     {
         Ok(Ok(socket)) => socket,
-        Ok(Err(error)) => return Ok(full(StatusCode::BAD_GATEWAY, &error.to_string())),
+        Ok(Err(error)) => {
+            TraceEvent::new(context, TraceStage::HttpForward, error.into()).emit();
+            return Ok(full(StatusCode::BAD_GATEWAY, &error.to_string()));
+        }
         Err(_) => {
+            let mut event =
+                TraceEvent::new(context, TraceStage::HttpForward, TraceOutcome::Timeout);
+            event.pending_stage = Some(pending);
+            event.emit();
             return Ok(full(
                 StatusCode::GATEWAY_TIMEOUT,
                 &ProxyError::Timeout.to_string(),
@@ -585,8 +693,13 @@ async fn handle(
             HeaderValue::from_str(value).expect("encoded authorization"),
         );
     }
+    let forward = TraceSpan::new(context, TraceStage::HttpForward);
     match timeout(DEADLINE, sender.send_request(request)).await {
         Ok(Ok(mut response)) => {
+            let mut event = TraceEvent::new(context, TraceStage::HttpForward, TraceOutcome::Ok);
+            event.duration_ms = Some(forward.elapsed_ms());
+            event.http_status = Some(response.status().as_u16() as i32);
+            event.emit();
             if upstream.protocol != ProxyProtocol::Socks5
                 && response.status() == StatusCode::PROXY_AUTHENTICATION_REQUIRED
             {
@@ -601,67 +714,119 @@ async fn handle(
                     .boxed_unsync()
             }))
         }
-        Ok(Err(_)) => Ok(full(
-            StatusCode::BAD_GATEWAY,
-            "Upstream HTTP request failed",
-        )),
-        Err(_) => Ok(full(
-            StatusCode::GATEWAY_TIMEOUT,
-            &ProxyError::Timeout.to_string(),
-        )),
+        Ok(Err(_)) => {
+            forward.end(TraceOutcome::IoUnknown, None);
+            Ok(full(
+                StatusCode::BAD_GATEWAY,
+                "Upstream HTTP request failed",
+            ))
+        }
+        Err(_) => {
+            forward.end(TraceOutcome::Timeout, None);
+            Ok(full(
+                StatusCode::GATEWAY_TIMEOUT,
+                &ProxyError::Timeout.to_string(),
+            ))
+        }
     }
 }
 
 async fn connect_tunnel(
     upstream: &Upstream,
     authority: &Authority,
+    context: TraceContext,
 ) -> Result<(UpstreamStream, Vec<u8>), ProxyError> {
-    timeout(DEADLINE, async {
+    let tunnel = TraceSpan::new(context, TraceStage::TunnelEstablished);
+    let mut pending = TraceStage::ProviderTcp;
+    let result = timeout(DEADLINE, async {
         if upstream.protocol == ProxyProtocol::Socks5 {
-            return connect_socks(upstream, authority, 443)
+            return connect_socks(upstream, authority, 443, context, &mut pending)
                 .await
                 .map(|stream| (stream, Vec::new()));
         }
-        let mut socket = connect_http_proxy(upstream).await?;
+        let mut socket = connect_http_proxy(upstream, context, &mut pending).await?;
+        let connect = TraceSpan::new(context, TraceStage::HttpConnect);
+        TraceEvent::new(context, TraceStage::HttpConnect, TraceOutcome::Start).emit();
         let mut head = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n");
         if let Some(value) = &upstream.authorization {
             head.push_str(&format!("Proxy-Authorization: {value}\r\n"));
         }
         head.push_str("\r\n");
-        socket
-            .write_all(head.as_bytes())
-            .await
-            .map_err(|_| ProxyError::Connect)?;
-        socket.flush().await.map_err(|_| ProxyError::Connect)?;
+        pending = TraceStage::HttpConnectWrite;
+        let write = TraceSpan::new(context, pending);
+        TraceEvent::new(context, pending, TraceOutcome::Start).emit();
+        socket.write_all(head.as_bytes()).await.map_err(|error| {
+            write.io(&error);
+            ProxyError::Connect
+        })?;
+        write.end(TraceOutcome::Ok, None);
+        pending = TraceStage::HttpConnectFlush;
+        let flush = TraceSpan::new(context, pending);
+        TraceEvent::new(context, pending, TraceOutcome::Start).emit();
+        socket.flush().await.map_err(|error| {
+            flush.io(&error);
+            ProxyError::Connect
+        })?;
+        flush.end(TraceOutcome::Ok, None);
+        pending = TraceStage::HttpConnectRead;
+        let read = TraceSpan::new(context, pending);
+        TraceEvent::new(context, pending, TraceOutcome::Start).emit();
         let mut response = Vec::new();
         loop {
             let mut chunk = [0; 4096];
-            let count = socket
-                .read(&mut chunk)
-                .await
-                .map_err(|_| ProxyError::Connect)?;
+            let count = socket.read(&mut chunk).await.map_err(|error| {
+                read.io(&error);
+                ProxyError::Connect
+            })?;
             if count == 0 {
+                read.end(TraceOutcome::ResponseEof, None);
                 return Err(ProxyError::Protocol);
             }
             response.extend_from_slice(&chunk[..count]);
             while let Some(end) = response.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
                 if end > MAX_HEAD {
+                    trace_connect_parse(context, trace::ParseFailure::HeadTooLarge);
                     return Err(ProxyError::Protocol);
                 }
-                let text =
-                    std::str::from_utf8(&response[..end]).map_err(|_| ProxyError::Protocol)?;
+                let text = std::str::from_utf8(&response[..end]).map_err(|_| {
+                    trace_connect_parse(context, trace::ParseFailure::InvalidUtf8);
+                    ProxyError::Protocol
+                })?;
                 let mut status = text
                     .lines()
                     .next()
-                    .ok_or(ProxyError::Protocol)?
+                    .ok_or_else(|| {
+                        trace_connect_parse(context, trace::ParseFailure::MissingStatusLine);
+                        ProxyError::Protocol
+                    })?
                     .split_whitespace();
                 if !matches!(status.next(), Some("HTTP/1.0" | "HTTP/1.1")) {
+                    trace_connect_parse(context, trace::ParseFailure::InvalidVersion);
                     return Err(ProxyError::Protocol);
                 }
-                let code: u16 = status
-                    .next()
-                    .and_then(|c| c.parse().ok())
-                    .ok_or(ProxyError::Protocol)?;
+                let code: u16 = status.next().and_then(|c| c.parse().ok()).ok_or_else(|| {
+                    trace_connect_parse(context, trace::ParseFailure::InvalidStatus);
+                    ProxyError::Protocol
+                })?;
+                let mut event = TraceEvent::new(
+                    context,
+                    TraceStage::HttpConnect,
+                    if (200..300).contains(&code) {
+                        TraceOutcome::Ok
+                    } else if (100..200).contains(&code) {
+                        TraceOutcome::Start
+                    } else if code == 407 {
+                        TraceOutcome::Authentication
+                    } else {
+                        TraceOutcome::Protocol
+                    },
+                );
+                event.http_status = Some(code as i32);
+                event.duration_ms = Some(connect.elapsed_ms());
+                event.emit();
+                if !(100..200).contains(&code) {
+                    read.end(TraceOutcome::Ok, None);
+                }
                 if code == 407 {
                     return Err(ProxyError::Authentication);
                 }
@@ -675,18 +840,54 @@ async fn connect_tunnel(
                 return Ok((socket, response[end + 4..].to_vec()));
             }
             if response.len() > MAX_HEAD {
+                trace_connect_parse(context, trace::ParseFailure::HeadTooLarge);
                 return Err(ProxyError::Protocol);
             }
         }
     })
     .await
-    .map_err(|_| ProxyError::Timeout)?
+    .map_err(|_| {
+        let mut event = TraceEvent::new(context, pending, TraceOutcome::Timeout);
+        event.pending_stage = Some(pending);
+        event.duration_ms = Some(tunnel.elapsed_ms());
+        event.emit();
+        ProxyError::Timeout
+    })
+    .and_then(|result| result);
+    tunnel.end(
+        result
+            .as_ref()
+            .map_or_else(|e| (*e).into(), |_| TraceOutcome::Ok),
+        None,
+    );
+    result
 }
 
-async fn connect_http_proxy(upstream: &Upstream) -> Result<UpstreamStream, ProxyError> {
+fn trace_connect_parse(context: TraceContext, reason: trace::ParseFailure) {
+    let mut event = TraceEvent::new(
+        context,
+        TraceStage::HttpConnectParse,
+        TraceOutcome::Protocol,
+    );
+    event.parse_failure = Some(reason);
+    event.emit();
+}
+
+async fn connect_http_proxy(
+    upstream: &Upstream,
+    context: TraceContext,
+    pending: &mut TraceStage,
+) -> Result<UpstreamStream, ProxyError> {
+    *pending = TraceStage::ProviderTcp;
+    let tcp = TraceSpan::new(context, TraceStage::ProviderTcp);
+    TraceEvent::new(context, TraceStage::ProviderTcp, TraceOutcome::Start).emit();
     let socket = TcpStream::connect((upstream.host.as_str(), upstream.port))
         .await
-        .map_err(|_| ProxyError::Connect)?;
+        .map_err(|error| {
+            tcp.io(&error);
+            ProxyError::Connect
+        })?;
+    tcp.end(TraceOutcome::Ok, None);
     if upstream.protocol == ProxyProtocol::Http {
         return Ok(Box::new(socket));
     }
@@ -699,10 +900,14 @@ async fn connect_http_proxy(upstream: &Upstream) -> Result<UpstreamStream, Proxy
         })
         .as_ref()
         .ok_or(ProxyError::Tls)?;
-    let tls = connector
-        .connect(name, socket)
-        .await
-        .map_err(|_| ProxyError::Tls)?;
+    *pending = TraceStage::ProviderTls;
+    let tls_trace = TraceSpan::new(context, TraceStage::ProviderTls);
+    TraceEvent::new(context, TraceStage::ProviderTls, TraceOutcome::Start).emit();
+    let tls = connector.connect(name, socket).await.map_err(|_| {
+        tls_trace.end(TraceOutcome::Tls, None);
+        ProxyError::Tls
+    })?;
+    tls_trace.end(TraceOutcome::Ok, None);
     Ok(Box::new(tls))
 }
 
@@ -718,19 +923,28 @@ async fn connect_socks(
     upstream: &Upstream,
     authority: &Authority,
     default_port: u16,
+    context: TraceContext,
+    pending: &mut TraceStage,
 ) -> Result<UpstreamStream, ProxyError> {
     // Resolve/connect the proxy with Tokio, rather than the client's synchronous
     // ToSocketAddrs helper. Target domains are sent to SOCKS without local DNS.
+    *pending = TraceStage::ProviderTcp;
+    let tcp = TraceSpan::new(context, TraceStage::ProviderTcp);
+    TraceEvent::new(context, TraceStage::ProviderTcp, TraceOutcome::Start).emit();
     let socket = TcpStream::connect((upstream.host.as_str(), upstream.port))
         .await
-        .map_err(|_| ProxyError::Connect)?;
+        .map_err(|error| {
+            tcp.io(&error);
+            ProxyError::Connect
+        })?;
+    tcp.end(TraceOutcome::Ok, None);
     let target = (
         authority.host().trim_matches(['[', ']']),
         authority.port_u16().unwrap_or(default_port),
     )
         .to_target_addr()
         .map_err(|_| ProxyError::Invalid)?;
-    let auth = match &upstream.socks_auth {
+    let auth = match &upstream.credentials {
         Some((user, secret)) => {
             let secret = if secret.is_empty() {
                 "x"
@@ -744,14 +958,38 @@ async fn connect_socks(
         }
         None => None,
     };
+    *pending = TraceStage::SocksNegotiateAuth;
+    let negotiate = TraceSpan::new(context, TraceStage::SocksNegotiateAuth);
+    TraceEvent::new(context, TraceStage::SocksNegotiateAuth, TraceOutcome::Start).emit();
     let mut stream = Socks5Stream::use_stream(socket, auth, SocksConfig::default())
         .await
-        .map_err(socks_error)?;
+        .map_err(|error| traced_socks_error(error, &negotiate))?;
+    negotiate.end(TraceOutcome::Ok, None);
+    *pending = TraceStage::SocksConnect;
+    let connect = TraceSpan::new(context, TraceStage::SocksConnect);
+    TraceEvent::new(context, TraceStage::SocksConnect, TraceOutcome::Start).emit();
     stream
         .request(Socks5Command::TCPConnect, target)
         .await
-        .map_err(socks_error)?;
+        .map_err(|error| traced_socks_error(error, &connect))?;
+    connect.end(TraceOutcome::Ok, None);
     Ok(Box::new(stream))
+}
+
+fn traced_socks_error(error: fast_socks5::SocksError, span: &TraceSpan) -> ProxyError {
+    let code = if let fast_socks5::SocksError::Io(io) = &error {
+        io.raw_os_error()
+    } else {
+        None
+    };
+    let io_outcome = if let fast_socks5::SocksError::Io(io) = &error {
+        Some(trace::io_outcome(io))
+    } else {
+        None
+    };
+    let category = socks_error(error);
+    span.end(io_outcome.unwrap_or_else(|| category.into()), code);
+    category
 }
 
 fn socks_error(error: fast_socks5::SocksError) -> ProxyError {

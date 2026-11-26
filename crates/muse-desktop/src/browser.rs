@@ -1,5 +1,6 @@
 //! Native browser adapter. Every callback carries immutable account/tab identity.
 
+use crate::browser_route::AccountRoute;
 use crate::{
     page_observer::{self, PageSnapshot},
     session_guard::{PageGate, ProfileBindings},
@@ -7,7 +8,10 @@ use crate::{
 use muse_core::{AccountId, AccountNetwork, BrowserEvent, BrowserIdentity};
 #[cfg(target_os = "windows")]
 use muse_proxy::LocalAuth;
-use muse_proxy::{ProxyBridge, Upstream};
+use muse_proxy::Upstream;
+use muse_proxy::trace::{
+    Context as TraceContext, Event as TraceEvent, Outcome as TraceOutcome, Stage as TraceStage,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     cell::Cell,
@@ -71,8 +75,9 @@ pub struct HostedTab {
     pub identity: BrowserIdentity,
     pub view: WebView,
     _context: WebContext,
-    _bridge: Option<Arc<ProxyBridge>>,
+    _route: Option<Arc<AccountRoute>>,
     gate: Arc<Mutex<PageGate>>,
+    trace: Arc<Mutex<crate::proxy_trace::Navigation>>,
     last_probe: Cell<u64>,
     pending_probe: Cell<Option<(u64, u64)>>,
     force_quota: Cell<bool>,
@@ -142,7 +147,7 @@ pub struct BrowserPool {
     last_zoom: Cell<Option<(muse_core::TabId, i64)>>,
     data_root: PathBuf,
     display: Cell<muse_core::DisplayPreferences>,
-    bridges: HashMap<muse_core::AccountId, Arc<ProxyBridge>>,
+    routes: HashMap<muse_core::AccountId, Arc<AccountRoute>>,
     failures: HashMap<BrowserIdentity, String>,
     closing: HashMap<muse_core::AccountId, Vec<ClosingProcess>>,
     profiles: ProfileBindings,
@@ -277,7 +282,7 @@ impl BrowserPool {
             last_zoom: Cell::new(None),
             data_root,
             display: Cell::new(display),
-            bridges: HashMap::new(),
+            routes: HashMap::new(),
             failures: HashMap::new(),
             closing: HashMap::new(),
             profiles: ProfileBindings::default(),
@@ -294,10 +299,19 @@ impl BrowserPool {
         bounds: Rect,
     ) -> Result<(), String> {
         let identity = request.identity;
+        let already_failed = self.failures.contains_key(&identity);
+        let mut failure_context = crate::proxy_trace::identity(identity);
+        failure_context.binding = Some(crate::proxy_trace::binding(request.network));
+        failure_context.proxy_required = Some(request.network != AccountNetwork::Direct);
+        failure_context.force_proxy = Some(request.network.force_proxy());
         let result = self.ensure_inner(request, window, bounds);
         if let Err(error) = &result
             && !self.is_rebuilding(identity.account_id)
         {
+            if !already_failed {
+                TraceEvent::new(failure_context, TraceStage::ViewError, TraceOutcome::Failed)
+                    .emit();
+            }
             self.failures.insert(identity, error.clone());
         }
         result
@@ -435,26 +449,35 @@ impl BrowserPool {
         if let Some(error) = self.failures.get(&identity) {
             return Err(error.clone());
         }
-        let bridge = if network != AccountNetwork::Direct {
-            if let Some(bridge) = self.bridges.get(&identity.account_id) {
-                if !bridge.is_running() {
+        let route = if network != AccountNetwork::Direct {
+            if let Some(route) = self.routes.get(&identity.account_id) {
+                if !route.is_running() {
                     return Err("此账号的代理已停止；未使用直连".into());
                 }
-                Some(bridge.clone())
+                Some(route.clone())
             } else {
                 let result = (|| {
                     let (id, revision) = proxy_credentials?;
                     let secret = crate::secrets::ProtectedStore::new(&self.data_root)
                         .load_selected(id, revision)?;
                     let upstream = Upstream::parse(secret.as_str()).map_err(|e| e.to_string())?;
-                    ProxyBridge::start(upstream)
-                        .map(Arc::new)
-                        .map_err(|e| e.to_string())
+                    AccountRoute::start(
+                        upstream,
+                        TraceContext {
+                            account: crate::proxy_trace::account(identity.account_id),
+                            binding: Some(crate::proxy_trace::binding(network)),
+                            proxy_required: Some(true),
+                            force_proxy: Some(network.force_proxy()),
+                            ..Default::default()
+                        },
+                    )
+                    .map(Arc::new)
+                    .map_err(|e| e.to_string())
                 })();
                 match result {
-                    Ok(bridge) => {
-                        self.bridges.insert(identity.account_id, bridge.clone());
-                        Some(bridge)
+                    Ok(route) => {
+                        self.routes.insert(identity.account_id, route.clone());
+                        Some(route)
                     }
                     Err(error) => {
                         self.failures.insert(identity, error.clone());
@@ -474,6 +497,21 @@ impl BrowserPool {
         let load_tx = self.sender.clone();
         let ipc_tx = self.sender.clone();
         let gate = Arc::new(Mutex::new(PageGate::default()));
+        let mut trace_context = crate::proxy_trace::identity(identity);
+        trace_context.binding = Some(crate::proxy_trace::binding(network));
+        trace_context.proxy_required = Some(network != AccountNetwork::Direct);
+        trace_context.force_proxy = Some(network.force_proxy());
+        if let Some(route) = &route {
+            let context = route.trace_context();
+            trace_context.route = context.route;
+            trace_context.bridge = context.bridge;
+            trace_context.protocol = context.protocol;
+            trace_context.route_path = context.route_path;
+        }
+        let native_trace = Arc::new(Mutex::new(crate::proxy_trace::Navigation::new(
+            trace_context,
+        )));
+        TraceEvent::new(trace_context, TraceStage::ViewCreate, TraceOutcome::Start).emit();
         let navigation_gate = gate.clone();
         let diagnostic_origin = diagnostic_origin.map(str::to_owned);
         let mut builder = WebViewBuilder::new_with_web_context(&mut context)
@@ -492,6 +530,25 @@ impl BrowserPool {
                     return true;
                 }
                 let allowed = muse_core::normalize_web_url(&url).is_ok();
+                if muse_proxy::trace::enabled() {
+                    let mut context = trace_context;
+                    context.action = crate::proxy_trace::identity(identity).action;
+                    (context.target, context.destination) = if allowed {
+                        crate::proxy_trace::target(&url)
+                    } else {
+                        (0, None)
+                    };
+                    TraceEvent::new(
+                        context,
+                        TraceStage::AppNavigation,
+                        if allowed {
+                            TraceOutcome::Allowed
+                        } else {
+                            TraceOutcome::Blocked
+                        },
+                    )
+                    .emit();
+                }
                 if allowed {
                     navigation_gate
                         .lock()
@@ -565,13 +622,8 @@ impl BrowserPool {
             locale.validate()?;
             let mut arguments =
                 "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection".to_owned();
-            if let Some(bridge) = &bridge {
-                let bypass = if network.force_proxy() {
-                    " --proxy-bypass-list=<-loopback>"
-                } else {
-                    ""
-                };
-                arguments = format!("--proxy-server=http://{}{bypass}", bridge.address());
+            if let Some(route) = &route {
+                arguments = route.arguments(network.force_proxy());
             }
             // Account tabs, popups re-opened as tabs, and internal readers must
             // use identical environment language/options with the same profile.
@@ -593,8 +645,8 @@ impl BrowserPool {
             .build_as_child(window)
             .map_err(|error| format!("浏览器创建失败，请检查 WebView2 Runtime：{error}"))?;
         #[cfg(target_os = "windows")]
-        if let Some(bridge) = &bridge {
-            install_local_auth(&view, bridge.shared_auth())?;
+        if let Some(route) = &route {
+            route.install(&view, trace_context)?;
         }
         #[cfg(target_os = "windows")]
         {
@@ -612,18 +664,26 @@ impl BrowserPool {
         view.zoom(self.display.get().page_zoom())
             .map_err(|error| format!("无法恢复页面缩放：{error}"))?;
         #[cfg(target_os = "windows")]
-        install_navigation_errors(&view, identity, self.sender.clone(), gate.clone())?;
+        install_navigation_errors(
+            &view,
+            identity,
+            self.sender.clone(),
+            gate.clone(),
+            native_trace.clone(),
+        )?;
         #[cfg(target_os = "windows")]
         crate::browser_locale::apply_timezone(&view, locale.timezone.as_deref())?;
         view.load_url(url).map_err(|_| "无法打开账号页面")?;
+        TraceEvent::new(trace_context, TraceStage::ViewCreate, TraceOutcome::Ok).emit();
         self.tabs.insert(
             identity.tab_id,
             HostedTab {
                 identity,
                 view,
                 _context: context,
-                _bridge: bridge,
+                _route: route,
                 gate,
+                trace: native_trace,
                 last_probe: Cell::new(0),
                 pending_probe: Cell::new(None),
                 force_quota: Cell::new(false),
@@ -640,6 +700,17 @@ impl BrowserPool {
 
     pub fn view(&self, id: muse_core::TabId) -> Option<&WebView> {
         self.tabs.get(&id).map(|tab| &tab.view)
+    }
+    pub fn trace_context(&self, identity: BrowserIdentity) -> TraceContext {
+        if let Some(tab) = self
+            .tabs
+            .get(&identity.tab_id)
+            .filter(|t| t.identity == identity)
+            && let Ok(trace) = tab.trace.try_lock()
+        {
+            return trace.context;
+        }
+        crate::proxy_trace::identity(identity)
     }
 
     /// Page zoom of a tab as WebView2 reports it; 1.0 is 100%.
@@ -934,6 +1005,11 @@ impl BrowserPool {
         let (epoch, ready, failed) = {
             let mut gate = tab.gate.lock().unwrap();
             if gate.timed_out(now) {
+                if muse_proxy::trace::enabled()
+                    && let Ok(trace) = tab.trace.try_lock()
+                {
+                    trace.readiness(TraceStage::ReadinessTimeout, TraceOutcome::Timeout);
+                }
                 let _ = self.sender.send(BrowserMessage::State(
                     identity,
                     BrowserEvent::Error("页面就绪检查超时".into()),
@@ -1025,7 +1101,16 @@ impl BrowserPool {
             return false;
         }
         let mut gate = tab.gate.lock().unwrap();
+        let was_ready = gate.ready();
         let accepted = gate.observe(epoch, snapshot.ready, page_observer::now_ms());
+        if accepted
+            && !was_ready
+            && gate.ready()
+            && muse_proxy::trace::enabled()
+            && let Ok(trace) = tab.trace.try_lock()
+        {
+            trace.readiness(TraceStage::DomReady, TraceOutcome::Ok);
+        }
         if accepted {
             self.last_active.set(None);
             let status = match snapshot.quota_status.as_str() {
@@ -1117,13 +1202,24 @@ impl BrowserPool {
     }
 
     pub fn request_count(&self, id: muse_core::AccountId) -> Option<u64> {
-        self.bridges.get(&id).map(|bridge| bridge.request_count())
+        self.routes.get(&id).and_then(|route| route.request_count())
+    }
+    pub fn route_label(&self, id: muse_core::AccountId) -> Option<&'static str> {
+        self.routes.get(&id).map(|route| route.label())
     }
     pub fn is_rebuilding(&self, id: muse_core::AccountId) -> bool {
         self.closing.contains_key(&id)
     }
 
     pub fn invalidate_account(&mut self, id: muse_core::AccountId) {
+        for tab in self.tabs.values().filter(|t| t.identity.account_id == id) {
+            TraceEvent::new(
+                self.trace_context(tab.identity),
+                TraceStage::ViewInvalidate,
+                TraceOutcome::Stopped,
+            )
+            .emit();
+        }
         #[cfg(target_os = "windows")]
         {
             use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
@@ -1148,7 +1244,7 @@ impl BrowserPool {
             }
         }
         self.tabs.retain(|_, tab| tab.identity.account_id != id);
-        self.bridges.remove(&id);
+        self.routes.remove(&id);
         self.failures
             .retain(|identity, _| identity.account_id != id);
         self.observations
@@ -1282,7 +1378,7 @@ impl BrowserPool {
             .iter()
             .map(|identity| identity.account_id)
             .collect();
-        self.bridges
+        self.routes
             .retain(|id, _| workspace.account(*id).is_some() || candidate_accounts.contains(id));
         self.failures.retain(|identity, _| {
             workspace.contains_identity(*identity) || self.cookie_only.contains(identity)
@@ -1299,7 +1395,11 @@ impl BrowserPool {
 }
 
 #[cfg(target_os = "windows")]
-fn install_local_auth(view: &WebView, auth: Arc<LocalAuth>) -> Result<(), String> {
+pub(super) fn install_local_auth(
+    view: &WebView,
+    auth: Arc<LocalAuth>,
+    context: TraceContext,
+) -> Result<(), String> {
     let native: ICoreWebView2_10 = view
         .webview()
         .cast()
@@ -1312,6 +1412,16 @@ fn install_local_auth(view: &WebView, auth: Arc<LocalAuth>) -> Result<(), String
                 let challenge = take_pwstr(challenge);
                 // Only random local bridge credentials can enter this callback;
                 // provider credentials are held exclusively by the Rust bridge.
+                TraceEvent::new(
+                    context,
+                    TraceStage::WebViewAuth,
+                    if challenge == auth.challenge() {
+                        TraceOutcome::MatchedLocal
+                    } else {
+                        TraceOutcome::OtherChallenge
+                    },
+                )
+                .emit();
                 if challenge == auth.challenge() {
                     let response = args.Response()?;
                     response.SetUserName(&HSTRING::from(auth.username()))?;
@@ -1333,8 +1443,10 @@ fn install_navigation_errors(
     identity: BrowserIdentity,
     sender: Sender<BrowserMessage>,
     gate: Arc<Mutex<PageGate>>,
+    trace: Arc<Mutex<crate::proxy_trace::Navigation>>,
 ) -> Result<(), String> {
     let start_gate = gate.clone();
+    let start_trace = trace.clone();
     let starting = NavigationStartingEventHandler::create(Box::new(move |_, args| {
         if let Some(args) = args {
             let mut id = 0;
@@ -1349,6 +1461,13 @@ fn install_navigation_errors(
             gate.native_navigation_started(id);
             if redirected.as_bool() {
                 gate.native_redirect();
+            }
+            if muse_proxy::trace::enabled()
+                && let Ok(mut trace) = start_trace.try_lock()
+            {
+                let mut uri = PWSTR::null();
+                let uri = unsafe { args.Uri(&mut uri) }.ok().map(|()| take_pwstr(uri));
+                trace.starting(identity, id, redirected.as_bool(), uri.as_deref());
             }
         }
         Ok(())
@@ -1380,12 +1499,24 @@ fn install_navigation_errors(
                         .ok()
                         .map(|()| code)
                 });
-            if !gate.lock().unwrap().record_navigation_completed(
+            let accepted = gate.lock().unwrap().record_navigation_completed(
                 navigation_id,
                 success.as_bool(),
                 status.0,
                 http_status,
-            ) {
+            );
+            if muse_proxy::trace::enabled()
+                && let Ok(trace) = trace.try_lock()
+            {
+                trace.completed(
+                    navigation_id,
+                    success.as_bool(),
+                    status.0,
+                    http_status,
+                    accepted,
+                );
+            }
+            if !accepted {
                 return Ok(());
             }
             if !success.as_bool() {

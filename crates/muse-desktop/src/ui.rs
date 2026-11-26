@@ -331,10 +331,9 @@ impl MuseWindow {
             focus: cx.focus_handle(),
             home,
             diagnostic_origin,
-            status: startup_error
-                .clone()
-                .or(caption_error)
-                .unwrap_or_else(|| "账号数据保存在本机".into()),
+            status: startup_error.clone().or(caption_error).unwrap_or_else(|| {
+                crate::proxy_trace::notice().unwrap_or_else(|| "账号数据保存在本机".into())
+            }),
             save_enabled: startup_error.is_none(),
             pending_save: None,
             display,
@@ -692,6 +691,13 @@ impl MuseWindow {
     }
 
     fn retry_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(identity) = self.workspace.active_browser_identity() {
+            crate::proxy_trace::action(
+                identity,
+                self.browsers.trace_context(identity),
+                muse_proxy::trace::Outcome::Retry,
+            );
+        }
         let Some(account) = self.workspace.active_account() else {
             return;
         };
@@ -1313,6 +1319,11 @@ impl MuseWindow {
             return;
         };
         if command == "reload" && self.browsers.view(identity.tab_id).is_none() {
+            crate::proxy_trace::action(
+                identity,
+                self.browsers.trace_context(identity),
+                muse_proxy::trace::Outcome::Reload,
+            );
             if self.workspace.restart_tab(identity.tab_id).is_ok() {
                 self.ensure_active(window);
             }
@@ -1343,6 +1354,16 @@ impl MuseWindow {
             }
             cx.notify();
             return;
+        }
+        let action = match command {
+            "back" => Some(muse_proxy::trace::Outcome::Back),
+            "forward" => Some(muse_proxy::trace::Outcome::Forward),
+            "reload" => Some(muse_proxy::trace::Outcome::Reload),
+            "home" => Some(muse_proxy::trace::Outcome::Home),
+            _ => None,
+        };
+        if let Some(action) = action {
+            crate::proxy_trace::action(identity, self.browsers.trace_context(identity), action);
         }
         let result = match command {
             "back" => view.go_back(),
@@ -1430,6 +1451,11 @@ impl MuseWindow {
                 if let Some(identity) = self.workspace.active_browser_identity()
                     && let Some(view) = self.browsers.view(identity.tab_id)
                 {
+                    crate::proxy_trace::action(
+                        identity,
+                        self.browsers.trace_context(identity),
+                        muse_proxy::trace::Outcome::Address,
+                    );
                     if let Err(error) = view.load_url(&url) {
                         self.status = error.to_string();
                     }
@@ -1464,6 +1490,13 @@ impl MuseWindow {
         }
         self.show_start_page = false;
         let _ = self.workspace.select_account(id);
+        if let Some(identity) = self.workspace.active_browser_identity() {
+            crate::proxy_trace::action(
+                identity,
+                self.browsers.trace_context(identity),
+                muse_proxy::trace::Outcome::Select,
+            );
+        }
         self.remove_confirmation = None;
         self.sync_fields(cx);
         self.ensure_active(window);
@@ -1888,21 +1921,20 @@ impl MuseWindow {
                 let direct =
                     self.workspace.account(smoke.first).is_some_and(|account| {
                         account.network == muse_core::AccountNetwork::Direct
-                    }) && self.browsers.request_count(smoke.first).is_none();
+                    }) && self.browsers.route_label(smoke.first).is_none();
                 if let Some(report) = &mut smoke.edit_report {
                     report["system_network_switch_applied"] = serde_json::json!(direct);
                 }
                 self.proxy_editor.enabled = true;
+                smoke.edit_count = crate::proxy_smoke::authenticated_requests().unwrap_or(0);
                 self.save_proxy(window, cx);
                 smoke.stage = 10;
             }
             10 if ready && !self.proxy_editor.applying => {
                 let enabled = self.workspace.account(smoke.first).is_some_and(|account| {
                     matches!(account.network, muse_core::AccountNetwork::HttpProxy { .. })
-                }) && self
-                    .browsers
-                    .request_count(smoke.first)
-                    .is_some_and(|count| count > 0);
+                }) && self.browsers.route_label(smoke.first).is_some()
+                    && crate::proxy_smoke::authenticated_requests().unwrap_or(0) > smoke.edit_count;
                 let other_preserved = smoke
                     .second
                     .and_then(|id| self.workspace.account(id))

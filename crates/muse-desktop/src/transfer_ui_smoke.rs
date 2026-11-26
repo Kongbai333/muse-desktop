@@ -263,10 +263,11 @@ impl MuseWindow {
                 }
                 let proxy_route = accounts.iter().all(|a| {
                     a.network == muse_core::AccountNetwork::Direct
-                        || self.browsers.request_count(a.id).is_some_and(|n| n > 0)
+                        || (self.browsers.route_label(a.id).is_some()
+                            && self.browsers.profile_verified(a.id))
                 });
                 if !proxy_route {
-                    return Err("activated diagnostic request did not use selected bridge".into());
+                    return Err("activated diagnostic request has no verified account route".into());
                 }
                 let ids: Vec<_> = accounts.iter().map(|a| a.id).collect();
                 self.close_transfer(window, cx);

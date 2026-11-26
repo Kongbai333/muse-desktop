@@ -635,7 +635,8 @@ impl MuseWindow {
                 dialog.test_ok = Some(result.result.is_ok());
                 dialog.message = match result.result {
                     Ok(()) => {
-                        "muse.ai:443 隧道建立通过；未验证目标 TLS 或页面访问，保存后生效".into()
+                        "兼容探测：muse.ai:443 隧道建立通过；保存后在账号窗口验证实际路由与页面"
+                            .into()
                     }
                     Err(error) => error,
                 };
@@ -655,6 +656,17 @@ impl MuseWindow {
         if dialog.pending {
             return;
         }
+        let trace_context = muse_proxy::trace::Context {
+            action: muse_proxy::trace::new_id(),
+            source: Some(muse_proxy::trace::Source::PoolTest),
+            ..Default::default()
+        };
+        muse_proxy::trace::Event::new(
+            trace_context,
+            muse_proxy::trace::Stage::ManualAction,
+            muse_proxy::trace::Outcome::Start,
+        )
+        .emit();
         let draft = dialog.proxy(cx);
         let upstream = match draft
             .proxy_url()
@@ -662,6 +674,12 @@ impl MuseWindow {
         {
             Ok(value) => value,
             Err(error) => {
+                muse_proxy::trace::Event::new(
+                    trace_context,
+                    muse_proxy::trace::Stage::ProbeEnd,
+                    muse_proxy::trace::Outcome::Configuration,
+                )
+                .emit();
                 dialog.message = error;
                 dialog.test_ok = Some(false);
                 cx.notify();
@@ -680,7 +698,7 @@ impl MuseWindow {
                     .map_err(|_| "无法启动连接测试".to_owned())
                     .and_then(|runtime| {
                         runtime
-                            .block_on(upstream.probe())
+                            .block_on(upstream.probe_traced(trace_context))
                             .map_err(|e| e.to_string())
                     });
                 let _ = sender.send(ConnectionResult { draft, result });

@@ -120,7 +120,7 @@ fn forward(
         .map_err(|_| std::io::Error::other("fixture auth lock"))?;
     if auth != Some(expected.as_str()) {
         REJECTED.fetch_add(1, Ordering::Relaxed);
-        browser.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+        browser.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"MuseSmoke\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
         return Ok(());
     }
     let mut lines = header.lines();
