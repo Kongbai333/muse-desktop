@@ -47,6 +47,9 @@ pub struct PageGate {
     readiness_timeout: bool,
     native_failure_status: Option<i32>,
     latest_native_navigation: Option<u64>,
+    native_http_status: Option<i32>,
+    native_success: Option<bool>,
+    native_redirects: u32,
 }
 impl PageGate {
     pub fn navigate(&mut self, now: u64) -> u64 {
@@ -57,6 +60,9 @@ impl PageGate {
         self.failed = false;
         self.readiness_timeout = false;
         self.native_failure_status = None;
+        self.native_http_status = None;
+        self.native_success = None;
+        self.native_redirects = 0;
         self.epoch
     }
     pub fn epoch(&self) -> u64 {
@@ -105,6 +111,24 @@ impl PageGate {
     pub fn native_navigation_started(&mut self, id: u64) {
         self.latest_native_navigation = Some(id);
     }
+    pub fn native_redirect(&mut self) {
+        self.native_redirects = self.native_redirects.saturating_add(1);
+    }
+    pub fn record_navigation_completed(
+        &mut self,
+        id: u64,
+        success: bool,
+        status: i32,
+        http_status: Option<i32>,
+    ) -> bool {
+        if self.latest_native_navigation != Some(id) {
+            return false;
+        }
+        self.native_http_status = http_status;
+        self.native_success = Some(success);
+        self.native_failure_status = (!success).then_some(status);
+        true
+    }
     #[cfg(any(target_os = "windows", test))]
     pub fn fail_navigation(&mut self, id: u64, status: i32) -> bool {
         if self.latest_native_navigation != Some(id) {
@@ -115,7 +139,7 @@ impl PageGate {
         true
     }
     pub fn diagnostics(&self, now: u64) -> serde_json::Value {
-        serde_json::json!({"epoch":self.epoch,"ready":self.ready,"failed":self.failed,"readiness_timeout":self.readiness_timeout,"content_seen":self.first_content.is_some(),"elapsed_ms":now.saturating_sub(self.started),"native_failure_status":self.native_failure_status})
+        serde_json::json!({"epoch":self.epoch,"ready":self.ready,"failed":self.failed,"readiness_timeout":self.readiness_timeout,"content_seen":self.first_content.is_some(),"elapsed_ms":now.saturating_sub(self.started),"native_failure_status":self.native_failure_status,"native_http_status":self.native_http_status,"native_success":self.native_success,"native_redirects":self.native_redirects})
     }
 }
 

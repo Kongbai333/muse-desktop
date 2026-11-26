@@ -18,7 +18,9 @@ use std::{
 #[cfg(target_os = "windows")]
 use webview2_com::{
     BasicAuthenticationRequestedEventHandler,
-    Microsoft::Web::WebView2::Win32::{ICoreWebView2_10, ICoreWebView2Environment7},
+    Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_10, ICoreWebView2Environment7, ICoreWebView2NavigationCompletedEventArgs2,
+    },
     NavigationCompletedEventHandler, NavigationStartingEventHandler, take_pwstr,
 };
 #[cfg(target_os = "windows")]
@@ -42,7 +44,7 @@ pub struct BrowserRequest<'a> {
     pub url: &'a str,
     pub profile: &'a Path,
     pub network: AccountNetwork,
-    pub fingerprint: muse_core::FingerprintMode,
+    pub locale: &'a muse_core::BrowserLocale,
     pub proxy_credentials: Result<(AccountId, Option<uuid::Uuid>), String>,
     pub diagnostic_origin: Option<&'a str>,
 }
@@ -406,7 +408,7 @@ impl BrowserPool {
             url,
             profile,
             network,
-            fingerprint,
+            locale,
             proxy_credentials,
             diagnostic_origin,
         } = request;
@@ -554,26 +556,38 @@ impl BrowserPool {
                     _ => {}
                 }
             });
-        if let Some(script) =
-            crate::browser_fingerprint::initialization(identity.account_id, fingerprint)
-        {
-            builder = builder.with_initialization_script_for_main_only(script, false);
-        }
         #[cfg(target_os = "windows")]
         {
             builder = builder.with_theme(webview_theme(self.display.get().theme));
         }
         #[cfg(target_os = "windows")]
-        if let Some(bridge) = &bridge {
-            let bypass = if network.force_proxy() {
-                " --proxy-bypass-list=<-loopback>"
+        {
+            locale.validate()?;
+            let mut arguments =
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection".to_owned();
+            if let Some(bridge) = &bridge {
+                let bypass = if network.force_proxy() {
+                    " --proxy-bypass-list=<-loopback>"
+                } else {
+                    ""
+                };
+                arguments = format!("--proxy-server=http://{}{bypass}", bridge.address());
+            }
+            // Account tabs, popups re-opened as tabs, and internal readers must
+            // use identical environment language/options with the same profile.
+            if let Some(tab) = self
+                .tabs
+                .values()
+                .find(|t| t.identity.account_id == identity.account_id)
+            {
+                builder = builder.with_environment(tab.view.environment());
+            } else if let Some(language) = locale.language.as_deref() {
+                builder = builder.with_environment(crate::browser_locale::environment(
+                    profile, language, &arguments,
+                )?);
             } else {
-                ""
-            };
-            builder = builder.with_additional_browser_args(format!(
-                "--proxy-server=http://{}{bypass}",
-                bridge.address()
-            ));
+                builder = builder.with_additional_browser_args(arguments);
+            }
         }
         let view = builder
             .build_as_child(window)
@@ -599,6 +613,8 @@ impl BrowserPool {
             .map_err(|error| format!("无法恢复页面缩放：{error}"))?;
         #[cfg(target_os = "windows")]
         install_navigation_errors(&view, identity, self.sender.clone(), gate.clone())?;
+        #[cfg(target_os = "windows")]
+        crate::browser_locale::apply_timezone(&view, locale.timezone.as_deref())?;
         view.load_url(url).map_err(|_| "无法打开账号页面")?;
         self.tabs.insert(
             identity.tab_id,
@@ -1325,7 +1341,15 @@ fn install_navigation_errors(
             unsafe {
                 args.NavigationId(&mut id)?;
             }
-            start_gate.lock().unwrap().native_navigation_started(id);
+            let mut redirected = Default::default();
+            unsafe {
+                args.IsRedirected(&mut redirected)?;
+            }
+            let mut gate = start_gate.lock().unwrap();
+            gate.native_navigation_started(id);
+            if redirected.as_bool() {
+                gate.native_redirect();
+            }
         }
         Ok(())
     }));
@@ -1341,17 +1365,32 @@ fn install_navigation_errors(
             unsafe {
                 args.IsSuccess(&mut success)?;
             }
+            let mut status = Default::default();
+            let mut navigation_id = 0;
+            unsafe {
+                args.WebErrorStatus(&mut status)?;
+                args.NavigationId(&mut navigation_id)?;
+            }
+            let http_status = args
+                .cast::<ICoreWebView2NavigationCompletedEventArgs2>()
+                .ok()
+                .and_then(|args| {
+                    let mut code = 0;
+                    unsafe { args.HttpStatusCode(&mut code) }
+                        .ok()
+                        .map(|()| code)
+                });
+            if !gate.lock().unwrap().record_navigation_completed(
+                navigation_id,
+                success.as_bool(),
+                status.0,
+                http_status,
+            ) {
+                return Ok(());
+            }
             if !success.as_bool() {
-                let mut status = Default::default();
-                unsafe {
-                    args.WebErrorStatus(&mut status)?;
-                }
                 if status.0 == 14 {
                     return Ok(());
-                }
-                let mut navigation_id = 0;
-                unsafe {
-                    args.NavigationId(&mut navigation_id)?;
                 }
                 if !gate
                     .lock()
@@ -1362,10 +1401,7 @@ fn install_navigation_errors(
                 }
                 let _ = sender.send(BrowserMessage::State(
                     identity,
-                    BrowserEvent::Error(format!(
-                        "页面加载失败（{}），请检查网络或上游代理；未改变账号的代理路由",
-                        status.0
-                    )),
+                    BrowserEvent::Error(navigation_error(status.0, http_status)),
                 ));
             }
         }
@@ -1378,4 +1414,27 @@ fn install_navigation_errors(
     }
     .map_err(|_| "无法注册网页加载状态回调")?;
     Ok(())
+}
+
+fn navigation_error(status: i32, http_status: Option<i32>) -> String {
+    let response = match http_status {
+        Some(code @ 100..=599) => format!("已收到 HTTP {code}，导航未完成"),
+        Some(0) => "未收到 HTTP 响应".into(),
+        _ => "HTTP 状态不可用".into(),
+    };
+    let category = match status {
+        1..=5 => "TLS 证书验证失败",
+        6 | 12 => "无法连接目标或代理",
+        7 => "连接或响应超时",
+        8 => "HTTP 响应无效",
+        9 => "连接中止",
+        10 => "连接被重置（来源未确定）",
+        11 => "网络连接断开",
+        13 => "域名解析失败",
+        15 => "重定向失败",
+        17 => "网站要求身份认证",
+        18 => "代理认证未通过",
+        _ => "WebView2 未提供明确传输原因",
+    };
+    format!("{response}；{category}（WebView2 {status}）。代理路由未改变；隧道测试不代表页面可用")
 }

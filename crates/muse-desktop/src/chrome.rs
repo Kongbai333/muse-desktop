@@ -1235,7 +1235,7 @@ impl MuseWindow {
                         if editor.pending.is_some() {
                             "测试中…"
                         } else {
-                            "测试连接"
+                            "测试隧道"
                         },
                         false,
                         cx.listener(|this, _, _, cx| {

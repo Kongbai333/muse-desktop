@@ -44,7 +44,8 @@ pub(super) struct AccountDialog {
     enabled: bool,
     protocol: ProxyProtocol,
     force: bool,
-    fingerprint: muse_core::FingerprintMode,
+    language: Entity<TextInput>,
+    timezone: Entity<TextInput>,
     reveal: bool,
     message: String,
     /// Shown as the name placeholder and used when the name is left empty.
@@ -103,6 +104,16 @@ impl AccountDialog {
             input
         });
         let (sender, receiver) = mpsc::channel();
+        let language = cx.new(|cx| {
+            let mut input = TextInput::new("", cx);
+            input.set_placeholder("跟随系统（留空）");
+            input
+        });
+        let timezone = cx.new(|cx| {
+            let mut input = TextInput::new("", cx);
+            input.set_placeholder("跟随系统（留空）");
+            input
+        });
         let mut dialog = Self {
             owner,
             removing,
@@ -119,7 +130,8 @@ impl AccountDialog {
             enabled: draft.enabled,
             protocol: draft.protocol,
             force: draft.force_proxy,
-            fingerprint: muse_core::FingerprintMode::Basic,
+            language,
+            timezone,
             reveal: false,
             message: String::new(),
             default_name: String::new(),
@@ -306,7 +318,26 @@ impl MuseWindow {
             dialog.set_default_name(format!("账号 {}", self.workspace.accounts.len() + 1), cx);
         }
         if let Some(account) = owner.and_then(|id| self.workspace.account(id)) {
-            dialog.fingerprint = account.fingerprint;
+            dialog.language.update(cx, |input, cx| {
+                input.set_text(
+                    account
+                        .browser_locale
+                        .language
+                        .as_deref()
+                        .unwrap_or_default(),
+                    cx,
+                )
+            });
+            dialog.timezone.update(cx, |input, cx| {
+                input.set_text(
+                    account
+                        .browser_locale
+                        .timezone
+                        .as_deref()
+                        .unwrap_or_default(),
+                    cx,
+                )
+            });
             dialog.force = account.network == muse_core::AccountNetwork::Direct
                 || account.network.force_proxy();
             dialog.route = RouteChoice::from(account.network);
@@ -419,7 +450,7 @@ impl MuseWindow {
             self.save_pool_screen(screen, &name, window, cx);
             return;
         }
-        let (route, force, fingerprint) = (dialog.route, dialog.force, dialog.fingerprint);
+        let (route, force) = (dialog.route, dialog.force);
         if removing {
             let Some(id) = owner else {
                 return;
@@ -468,14 +499,25 @@ impl MuseWindow {
                 return;
             }
         }
-        match proxy_pool::save_account_with_fingerprint(
+        let locale = match muse_core::BrowserLocale::from_input(
+            &dialog.language.read(cx).text(),
+            &dialog.timezone.read(cx).text(),
+        ) {
+            Ok(locale) => locale,
+            Err(error) => {
+                self.account_dialog.as_mut().unwrap().message = error;
+                cx.notify();
+                return;
+            }
+        };
+        match proxy_pool::save_account_with_locale(
             &self.data_dir,
             &mut self.workspace,
             owner,
             &name,
             route,
             force,
-            fingerprint,
+            locale,
         ) {
             Ok(saved) => {
                 if saved.browser_changed {
@@ -518,12 +560,18 @@ impl MuseWindow {
     ) -> Result<(), String> {
         let (mut candidate, saved) =
             proxy_pool::prepare_account(&self.data_dir, &self.workspace, None, name, route, force)?;
-        let mode = self
+        let locale = self
             .account_dialog
             .as_ref()
-            .map(|d| d.fingerprint)
+            .map(|d| {
+                muse_core::BrowserLocale::from_input(
+                    &d.language.read(cx).text(),
+                    &d.timezone.read(cx).text(),
+                )
+            })
+            .transpose()?
             .unwrap_or_default();
-        candidate.set_fingerprint_mode(saved.id, mode)?;
+        candidate.set_browser_locale(saved.id, locale)?;
         let identity = candidate
             .active_browser_identity()
             .ok_or("无法准备新账号")?;
@@ -536,7 +584,7 @@ impl MuseWindow {
                 url: "about:blank",
                 profile: &profile,
                 network: account.network,
-                fingerprint: account.fingerprint,
+                locale: &account.browser_locale,
                 proxy_credentials: candidate.proxy_credentials(account),
                 diagnostic_origin: self.diagnostic_origin.as_deref(),
             },
@@ -586,7 +634,9 @@ impl MuseWindow {
             if dialog.proxy(cx) == result.draft {
                 dialog.test_ok = Some(result.result.is_ok());
                 dialog.message = match result.result {
-                    Ok(()) => "连接与认证通过，保存后生效".into(),
+                    Ok(()) => {
+                        "muse.ai:443 隧道建立通过；未验证目标 TLS 或页面访问，保存后生效".into()
+                    }
                     Err(error) => error,
                 };
                 changed = true;
@@ -621,7 +671,7 @@ impl MuseWindow {
         let sender = dialog.sender.clone();
         dialog.test_ok = None;
         dialog.pending = true;
-        dialog.message = "正在测试连接…".into();
+        dialog.message = "正在测试代理认证及 muse.ai:443 隧道…".into();
         cx.background_executor()
             .spawn(async move {
                 let result = tokio::runtime::Builder::new_current_thread()
@@ -1257,7 +1307,8 @@ impl MuseWindow {
                             .line_height(px(18.))
                             .text_color(rgb(status_color))
                             .child(if dialog.message.is_empty() {
-                                "测试会连接 muse.ai:443，不会保存配置".to_owned()
+                                "仅测试认证及 muse.ai:443 隧道，不验证目标 TLS/页面，不保存配置"
+                                    .to_owned()
                             } else {
                                 dialog.message.clone()
                             }),
@@ -1267,7 +1318,7 @@ impl MuseWindow {
                         if dialog.pending {
                             "测试中…"
                         } else {
-                            "测试连接"
+                            "测试隧道"
                         },
                         ButtonKind::Secondary,
                         cx.listener(|this, _, _, cx| this.test_dialog_proxy(cx)),
@@ -1467,26 +1518,18 @@ impl MuseWindow {
                         })
                         .child(self.render_dialog_network(dialog, cx))
                         .child(
-                            div().flex().flex_col().gap_1()
-                                .child(checkbox_row(
-                                    "account-fingerprint", "基础指纹隔离（每账号固定）",
-                                    dialog.fingerprint == muse_core::FingerprintMode::Basic,
-                                    cx.listener(|this, _, _, cx| {
-                                        if let Some(d) = this.account_dialog.as_mut() {
-                                            d.fingerprint = match d.fingerprint {
-                                                muse_core::FingerprintMode::Basic => muse_core::FingerprintMode::Original,
-                                                muse_core::FingerprintMode::Original => muse_core::FingerprintMode::Basic,
-                                            };
-                                        }
-                                        cx.notify();
-                                    }),
-                                ))
+                            div().flex().flex_col().gap_2()
+                                .child(dialog_field("默认浏览器语言（留空跟随系统）", dialog.language.clone()))
                                 .child(div().text_size(px(11.)).line_height(px(17.))
                                     .text_color(rgb(colors().secondary))
-                                    .child("Canvas 与 WebGL 默认帧缓冲：sRGB 8位像素 / PNG（≤4MP）。"))
+                                    .child(format!("可选：{}", muse_core::BROWSER_LANGUAGES.join(" / "))))
+                                .child(dialog_field("时区（留空跟随系统）", dialog.timezone.clone()))
                                 .child(div().text_size(px(11.)).line_height(px(17.))
                                     .text_color(rgb(colors().secondary))
-                                    .child("不覆盖自定义帧缓冲、worker、字体、音频及网络指纹。"))
+                                    .child(format!("可选：{}", muse_core::BROWSER_TIMEZONES.join(" / "))))
+                                .child(div().text_size(px(11.)).line_height(px(17.))
+                                    .text_color(rgb(colors().secondary))
+                                    .child("只设置语言和时区；修改后重开此账号全部标签页，保留原目录与 Cookie。不根据代理推断，也不修改 Canvas、WebGL 或浏览器身份。"))
                         )
                 }
             };

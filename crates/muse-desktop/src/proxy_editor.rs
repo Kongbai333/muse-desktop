@@ -220,7 +220,7 @@ impl MuseWindow {
         let sender = self.proxy_editor.sender.clone();
         self.proxy_editor.pending = Some(nonce);
         self.proxy_editor.good = false;
-        self.proxy_editor.message = "正在测试连接与认证…".into();
+        self.proxy_editor.message = "正在测试代理认证及 muse.ai:443 隧道…".into();
         cx.background_executor()
             .spawn(async move {
                 let started = Instant::now();
@@ -304,7 +304,8 @@ impl MuseWindow {
             match result.result {
                 Ok(ms) => {
                     self.proxy_editor.good = true;
-                    self.proxy_editor.message = format!("连接与认证通过 · {ms} ms");
+                    self.proxy_editor.message =
+                        format!("muse.ai:443 隧道建立通过 · {ms} ms；未验证目标 TLS 或页面访问");
                 }
                 Err(error) => {
                     self.proxy_editor.good = false;
@@ -329,7 +330,7 @@ impl MuseWindow {
             {
                 self.proxy_editor.applying = false;
                 self.proxy_editor.good = true;
-                self.proxy_editor.message = "已应用，当前账号页面已重新加载".into();
+                self.proxy_editor.message = "已应用；页面访问结果以账号标签页为准".into();
                 self.status = "代理配置已应用".into();
                 changed = true;
             }

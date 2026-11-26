@@ -12,6 +12,8 @@ mod extra_quota;
 pub use extra_quota::{ExtraQuotaObservation, ExtraQuotaState};
 mod display_preferences;
 pub use display_preferences::{DisplayPreferences, ThemeMode};
+mod browser_locale;
+pub use browser_locale::{BROWSER_LANGUAGES, BROWSER_TIMEZONES, BrowserLocale};
 
 pub const HOME_URL: &str = "https://muse.ai/";
 pub type AccountId = Uuid;
@@ -209,6 +211,8 @@ pub struct Account {
     pub network: AccountNetwork,
     #[serde(default)]
     pub fingerprint: FingerprintMode,
+    #[serde(default, skip_serializing_if = "BrowserLocale::is_system")]
+    pub browser_locale: BrowserLocale,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -219,7 +223,7 @@ pub struct Account {
     pub transfer_origin: Option<TransferOrigin>,
 }
 
-/// Local browser readback policy; intentionally absent from the frozen transfer wire.
+/// Retired metadata retained for old workspaces; never enables browser readback changes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FingerprintMode {
@@ -353,6 +357,7 @@ impl Workspace {
             extra_quota: ExtraQuotaState::Unknown,
             network: AccountNetwork::Direct,
             fingerprint: FingerprintMode::Basic,
+            browser_locale: BrowserLocale::default(),
             legacy_id: None,
             proxy_revision: None,
             legacy_proxy_migrated: false,
@@ -408,6 +413,23 @@ impl Workspace {
             .find(|a| a.id == id)
             .unwrap()
             .fingerprint = mode;
+        Ok(true)
+    }
+
+    pub fn set_browser_locale(&mut self, id: AccountId, locale: BrowserLocale) -> Result<bool> {
+        locale.validate()?;
+        let account = self.account(id).ok_or("账号不存在")?;
+        if account.browser_locale == locale {
+            return Ok(false);
+        }
+        let (network, revision) = (account.network, account.proxy_revision);
+        // Invalidate every tab generation, while retaining profile/identity/route.
+        self.update_network(id, network, revision)?;
+        self.accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .unwrap()
+            .browser_locale = locale;
         Ok(true)
     }
 

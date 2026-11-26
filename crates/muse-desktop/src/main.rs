@@ -8,7 +8,7 @@ mod account_settings;
 mod account_transfer;
 mod assets;
 mod browser;
-mod browser_fingerprint;
+mod browser_locale;
 mod cookie_export;
 mod cookie_import;
 mod diagnostics;
@@ -165,10 +165,10 @@ fn main() {
         })();
         let report = match result {
             Ok(()) => {
-                serde_json::json!({"connected_through_upstream":true,"authentication_accepted":true,"direct_fallback":false})
+                serde_json::json!({"connected_through_upstream":true,"authentication_accepted":true,"direct_fallback":false,"scope":"tunnel_to_muse_ai_443","tls_verified":false,"page_access_verified":false})
             }
             Err(error) => {
-                serde_json::json!({"connected_through_upstream":false,"error":error,"direct_fallback":false})
+                serde_json::json!({"connected_through_upstream":false,"error":error,"direct_fallback":false,"scope":"tunnel_to_muse_ai_443","tls_verified":false,"page_access_verified":false})
             }
         };
         let _ = std::fs::write(

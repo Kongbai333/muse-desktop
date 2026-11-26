@@ -322,6 +322,23 @@ fn commit(root: &Path, workspace: &mut Workspace, candidate: Workspace) -> Resul
     Ok(())
 }
 
+pub fn save_account_with_locale(
+    root: &Path,
+    workspace: &mut Workspace,
+    owner: Option<AccountId>,
+    name: &str,
+    route: RouteChoice,
+    force_proxy: bool,
+    locale: muse_core::BrowserLocale,
+) -> Result<crate::account_settings::SavedAccount, String> {
+    let (mut candidate, mut saved) =
+        prepare_account(root, workspace, owner, name, route, force_proxy)?;
+    saved.browser_changed |= candidate.set_browser_locale(saved.id, locale)?;
+    commit(root, workspace, candidate)?;
+    Ok(saved)
+}
+
+#[cfg(test)]
 pub fn save_account_with_fingerprint(
     root: &Path,
     workspace: &mut Workspace,
