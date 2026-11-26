@@ -305,6 +305,8 @@ pub struct ProxyProfile {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubscriptionNode {
+    #[serde(skip)]
+    pub reason: Option<String>,
     pub id: Uuid,
     #[serde(skip)]
     pub name: String,

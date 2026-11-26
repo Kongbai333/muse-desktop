@@ -129,6 +129,9 @@ pub(super) fn route_path(protocol: ProxyProtocol) -> trace::RoutePath {
         ProxyProtocol::Https => trace::RoutePath::SystemHttpsBridge,
         ProxyProtocol::Socks5 => trace::RoutePath::SystemSocks5Bridge,
         ProxyProtocol::Shadowsocks => trace::RoutePath::ShadowsocksBridge,
+        ProxyProtocol::Vless | ProxyProtocol::Vmess | ProxyProtocol::Trojan => {
+            trace::RoutePath::FixedTlsBridge
+        }
     }
 }
 pub(super) fn timeout_error(pending: TraceStage) -> ProxyError {
