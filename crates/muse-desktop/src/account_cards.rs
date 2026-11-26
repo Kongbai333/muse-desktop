@@ -1,6 +1,16 @@
 use super::chrome::{avatar, glyph, icon_button};
+use super::group_ui::GroupOperation;
 use super::*;
+use crate::account_groups::UNGROUPED;
 use gpui::MouseDownEvent;
+use uuid::Uuid;
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct AccountDetail {
+    account: AccountId,
+    anchor_y: Pixels,
+    keyboard: bool,
+}
 
 fn reset_label(at: Option<u64>) -> String {
     at.and_then(crate::platform::local_time)
@@ -33,15 +43,183 @@ fn extra_pill(state: &muse_core::ExtraQuotaState) -> String {
 }
 
 const SEGMENTS: usize = 20;
-fn invite_value(state: &muse_core::ExtraQuotaState) -> String {
-    match state {
-        muse_core::ExtraQuotaState::Known(_) | muse_core::ExtraQuotaState::Stale(_) => {
-            extra_pill(state)
-                .trim_start_matches("额外")
-                .trim()
-                .to_owned()
+fn plan_usage(quota: &muse_core::QuotaState) -> (Option<f64>, bool, String) {
+    let used = used_percent(quota);
+    let exhausted = used.is_some_and(|value| value >= 99.5);
+    let label = match used {
+        Some(_) if exhausted => "已用完".into(),
+        Some(value) => format!("{value:.0}%"),
+        None => match quota {
+            muse_core::QuotaState::Unlimited { .. }
+            | muse_core::QuotaState::StaleUnlimited { .. } => "不限量",
+            muse_core::QuotaState::LoggedOut => "未登录",
+            muse_core::QuotaState::Stale(_) => "需刷新",
+            muse_core::QuotaState::Unavailable(_) => "同步失败",
+            _ => "待同步",
         }
-        _ => "待同步".into(),
+        .into(),
+    };
+    (used, exhausted, label)
+}
+
+#[inline(never)]
+fn account_row_summary(account: &muse_core::Account) -> Div {
+    let (used, exhausted, status) = plan_usage(&account.quota);
+    let percent = used.map(|value| value.round() as u8);
+    let label = match percent {
+        Some(percent) => format!("周额度已用 {percent}%"),
+        None => format!("周额度{status}"),
+    };
+    let color = if exhausted {
+        colors().danger
+    } else if percent.is_some() {
+        colors().blue
+    } else {
+        colors().secondary
+    };
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .line_clamp(1)
+                        .text_ellipsis()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(account.name.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .text_size(px(11.))
+                        .text_color(rgb(color))
+                        .child(label),
+                ),
+        )
+        .child(
+            div()
+                .h(px(4.))
+                .rounded_full()
+                .when_some(percent, |track, percent| {
+                    track.bg(rgb(colors().track)).child(
+                        div()
+                            .h_full()
+                            .w(relative(f32::from(percent) / 100.))
+                            .rounded_full()
+                            .bg(rgb(color)),
+                    )
+                }),
+        )
+}
+
+impl MuseWindow {
+    pub(super) fn prepare_account_rows(&mut self, cx: &mut Context<Self>) {
+        self.account_focus
+            .retain(|id, _| self.workspace.account(*id).is_some());
+        for account in &self.workspace.accounts {
+            self.account_focus
+                .entry(account.id)
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
+    }
+
+    #[inline(never)]
+    fn render_account_row(
+        &self,
+        account: &muse_core::Account,
+        compact: bool,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let id = account.id;
+        let active = !self.show_start_page && self.workspace.active_account_id() == Some(id);
+        div()
+            .id(id)
+            .relative()
+            .flex_none()
+            .rounded_lg()
+            .cursor_pointer()
+            .mx_2()
+            .mb_1()
+            .border_1()
+            .border_color(rgba(0x00000000))
+            .track_focus(&self.account_focus[&id])
+            .focus(|style| style.border_color(rgb(colors().blue)))
+            .when(!active, |element| {
+                element.hover(|style| style.bg(rgb(colors().fill_hover)))
+            })
+            .when(active, |element| {
+                element.child(self.card_selection_layer(format!("row-selection-{id}").into()))
+            })
+            .when(compact, |element| {
+                element
+                    .h(px(44.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(self.account_avatar(account, 30., active))
+            })
+            .when(!compact, |element| {
+                element
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(self.account_avatar(account, 28., active).flex_none())
+                    .child(account_row_summary(account))
+            })
+            .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                this.hover_account(id, *hovered, window, cx)
+            }))
+            .on_click(cx.listener(move |this, _, window, cx| this.select_account(id, window, cx)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.show_account_menu(id, event.position, window, cx);
+                }),
+            )
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if this.has_browser_overlay() {
+                    return;
+                }
+                let key = &event.keystroke;
+                match key.key.as_str() {
+                    "enter" | "space" => this.select_account(id, window, cx),
+                    "f2" => this.open_account_dialog(Some(id), false, window, cx),
+                    "f10" if key.modifiers.shift => {
+                        this.show_account_menu(id, point(px(96.), px(120.)), window, cx)
+                    }
+                    "i" if !key.modifiers.control && !key.modifiers.alt => {
+                        if this
+                            .account_detail
+                            .is_some_and(|detail| detail.account == id && detail.keyboard)
+                        {
+                            this.clear_account_detail(cx);
+                        } else {
+                            this.prefetch_page_snapshot();
+                            this.account_detail = Some(AccountDetail {
+                                account: id,
+                                anchor_y: px(110.),
+                                keyboard: true,
+                            });
+                            cx.notify();
+                        }
+                    }
+                    _ => return,
+                }
+                cx.stop_propagation();
+            }))
     }
 }
 
@@ -90,41 +268,48 @@ impl MuseWindow {
     }
 
     #[inline(never)]
-    fn render_account_row(
+    fn render_detail_content(
         &self,
         account: &muse_core::Account,
         selected: Option<AccountId>,
         cx: &Context<Self>,
-    ) -> Stateful<Div> {
+    ) -> Div {
         let id = account.id;
         let active = !self.show_start_page && selected == Some(id);
         let refreshing = self.refresh_accounts.contains_key(&id);
-        let used = used_percent(&account.quota);
-        let exhausted = used.is_some_and(|value| value >= 99.5);
+        let (used, exhausted, percent) = plan_usage(&account.quota);
         let reset = match &account.quota {
             muse_core::QuotaState::Known(value) | muse_core::QuotaState::Stale(value) => {
                 value.resets_at()
             }
             _ => None,
         };
-        let percent: String = match used {
-            Some(_) if exhausted => "已用完".into(),
-            Some(value) => format!("{value:.0}%"),
-            None => match account.quota {
-                muse_core::QuotaState::Unlimited { .. }
-                | muse_core::QuotaState::StaleUnlimited { .. } => "不限量",
-                muse_core::QuotaState::LoggedOut => "未登录",
-                muse_core::QuotaState::Stale(_) => "需刷新",
-                muse_core::QuotaState::Unavailable(_) => "同步失败",
-                _ => "待同步",
-            }
-            .into(),
-        };
         let plan = self
             .plan_labels
             .get(&id)
             .map(|label| label.trim_start_matches("Muse").trim().to_owned())
             .filter(|label| !label.is_empty());
+        let stale = (self.cached_accounts.contains(&id)
+            || matches!(
+                account.quota,
+                muse_core::QuotaState::Stale(_) | muse_core::QuotaState::StaleUnlimited { .. }
+            ))
+        .then_some(
+            if reset.is_some_and(|at| at <= crate::page_observer::now_ms()) {
+                "旧周期"
+            } else {
+                "未更新"
+            },
+        );
+        let status = if self.browsers.account_sleeping(id) {
+            "休眠中"
+        } else if self.browsers.account_ready(id) {
+            "已启动"
+        } else if self.browsers.account_running(id) {
+            "启动中"
+        } else {
+            "未启动"
+        };
         let proxied = account.network != muse_core::AccountNetwork::Direct;
         let network: String = account
             .network
@@ -147,28 +332,16 @@ impl MuseWindow {
             colors().blue
         };
         div()
-            .id(id)
-            .mx_2()
-            .mb_1()
+            .w_full()
             .p_3()
             .relative()
             .flex_none()
             .flex()
             .flex_col()
             .gap(px(10.))
-            .rounded_xl()
-            .cursor_pointer()
-            .when(!active, |element| {
-                element.hover(|style| style.bg(rgb(colors().fill_hover)))
-            })
-            .when(active, |element| {
-                element.child(
-                    self.card_selection_layer(SharedString::from(format!("row-selection-{id}"))),
-                )
-            })
-            // Avatar, name, plan badge, network, refresh and edit.
             .child(
                 div()
+                    .w_full()
                     .flex()
                     .items_center()
                     .gap(px(10.))
@@ -177,114 +350,16 @@ impl MuseWindow {
                             .relative()
                             .flex_none()
                             .when(exhausted && !active, |element| element.opacity(0.6))
-                            .child(self.account_avatar(account, 36., active))
-                            .child(
-                                div()
-                                    .absolute()
-                                    .right(px(-1.))
-                                    .bottom(px(-1.))
-                                    .child(self.account_running_dot(id, cx)),
-                            ),
+                            .child(self.account_avatar(account, 36., active)),
                     )
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .min_w_0()
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .flex_shrink()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_size(px(14.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(rgb(if exhausted && !active {
-                                                colors().muted
-                                            } else {
-                                                colors().text
-                                            }))
-                                            .child(account.name.clone()),
-                                    )
-                                    .when_some(plan, |element, plan| {
-                                        element.child(
-                                            div()
-                                                .flex_none()
-                                                .px(px(6.))
-                                                .rounded_md()
-                                                .border_1()
-                                                .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
-                                                .bg(rgb(colors().fill))
-                                                .text_size(px(10.))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(rgb(colors().secondary))
-                                                .child(plan),
-                                        )
-                                    })
-                                    .when(self.browsers.account_sleeping(id), |element| {
-                                        element.child(
-                                            div()
-                                                .flex_none()
-                                                .text_size(px(10.))
-                                                .text_color(rgb(colors().muted))
-                                                .child("休眠"),
-                                        )
-                                    })
-                                    .when(
-                                        self.cached_accounts.contains(&id)
-                                            || matches!(
-                                                account.quota,
-                                                muse_core::QuotaState::Stale(_)
-                                                    | muse_core::QuotaState::StaleUnlimited { .. }
-                                            ),
-                                        |element| {
-                                            element.child(
-                                                div()
-                                                    .flex_none()
-                                                    .text_size(px(10.))
-                                                    .text_color(rgb(colors().muted))
-                                                    .child(
-                                                        if reset.is_some_and(|at| {
-                                                            at <= crate::page_observer::now_ms()
-                                                        }) {
-                                                            "旧周期"
-                                                        } else {
-                                                            "未更新"
-                                                        },
-                                                    ),
-                                            )
-                                        },
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(5.))
-                                    .min_w_0()
-                                    .child(glyph(
-                                        if proxied { "shield-check" } else { "world" },
-                                        12.,
-                                        colors().muted,
-                                    ))
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_size(px(12.))
-                                            .text_color(rgb(colors().secondary))
-                                            .child(network),
-                                    ),
-                            ),
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .whitespace_normal()
+                            .child(account.name.clone()),
                     )
                     .child(icon_button(
                         "account-refresh",
@@ -308,6 +383,41 @@ impl MuseWindow {
                             this.open_account_dialog(Some(id), false, window, cx);
                         }),
                     )),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .text_size(px(11.))
+                    .text_color(rgb(colors().secondary))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(glyph(
+                                if proxied { "shield-check" } else { "world" },
+                                12.,
+                                colors().muted,
+                            ))
+                            .child(div().flex_1().min_w_0().child(network)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .when_some(plan, |element, plan| {
+                                element.child(
+                                    div().px_1().rounded_sm().bg(rgb(colors().fill)).child(plan),
+                                )
+                            })
+                            .child(status)
+                            .when_some(stale, |element, label| element.child(label))
+                            .when(refreshing, |element| element.child("正在刷新")),
+                    ),
             )
             // Quota label, percentage and segmented meter.
             .child(
@@ -367,49 +477,27 @@ impl MuseWindow {
                             .child(reset_label(reset)),
                     )
                     .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(px(11.))
-                                    .text_color(rgb(colors().muted))
-                                    .child("邀请额度"),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_size(px(11.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(rgb(colors().secondary))
-                                    .child(invite_value(&account.extra_quota)),
-                            ),
+                        div().min_w_0().flex().items_center().gap_1().child(
+                            div()
+                                .min_w_0()
+                                .text_size(px(11.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(colors().secondary))
+                                .child(extra_pill(&account.extra_quota)),
+                        ),
                     ),
             )
             // Invite code (click to copy) and how many friends redeemed it.
             .child(self.render_invite_row(id, cx))
-            .on_hover(
-                cx.listener(move |this, hovered: &bool, _, cx| {
-                    this.hover_account(id, *hovered, cx)
-                }),
-            )
-            .on_click(cx.listener(move |this, _, window, cx| this.select_account(id, window, cx)))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    this.show_account_menu(id, event.position, window, cx);
-                }),
-            )
     }
 
-    fn hover_account(&mut self, id: AccountId, hovered: bool, cx: &mut Context<Self>) {
+    fn hover_account(
+        &mut self,
+        id: AccountId,
+        hovered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if hovered {
             // A page still frame is prepared while the pointer is on the
             // sidebar, so menus and dialogs can cover the page without a gap.
@@ -420,10 +508,149 @@ impl MuseWindow {
                 self.avatar_hover = Some((id, Instant::now()));
                 cx.notify();
             }
-        } else if self.avatar_hover.is_some_and(|(current, _)| current == id) {
-            self.avatar_hover = None;
+            if self.has_browser_overlay() || self.sidebar_dragging {
+                return;
+            }
+            if self
+                .account_detail
+                .is_some_and(|detail| detail.account == id)
+            {
+                self.detail_open_timer = None;
+                self.detail_close_timer = None;
+                return;
+            }
+            let detail = AccountDetail {
+                account: id,
+                anchor_y: window.mouse_position().y,
+                keyboard: false,
+            };
+            self.detail_open_timer = Some((
+                id,
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(270))
+                        .await;
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        if !this.has_browser_overlay() {
+                            this.account_detail = Some(detail);
+                            cx.notify();
+                        }
+                    });
+                }),
+            ));
+        } else {
+            if self.avatar_hover.is_some_and(|(current, _)| current == id) {
+                self.avatar_hover = None;
+                cx.notify();
+            }
+            if self
+                .detail_open_timer
+                .as_ref()
+                .is_some_and(|(pending, _)| *pending == id)
+            {
+                self.detail_open_timer = None;
+            }
+            if self
+                .account_detail
+                .is_some_and(|detail| detail.account == id && !detail.keyboard)
+            {
+                self.schedule_detail_close(id, window, cx);
+            }
+        }
+    }
+
+    fn schedule_detail_close(
+        &mut self,
+        id: AccountId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.detail_close_timer = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(220))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this
+                    .account_detail
+                    .is_some_and(|detail| detail.account == id && !detail.keyboard)
+                    && !this
+                        .detail_bounds
+                        .get()
+                        .is_some_and(|bounds| bounds.contains(&window.mouse_position()))
+                {
+                    this.account_detail = None;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    pub(super) fn clear_account_detail(&mut self, cx: &mut Context<Self>) {
+        self.detail_open_timer = None;
+        self.detail_close_timer = None;
+        self.detail_bounds.set(None);
+        if self.account_detail.take().is_some() {
             cx.notify();
         }
+    }
+
+    #[inline(never)]
+    pub(super) fn render_account_detail(
+        &self,
+        side: f32,
+        viewport: Size<Pixels>,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let detail = self.account_detail?;
+        let account = self.workspace.account(detail.account)?;
+        let width = (f32::from(viewport.width) - side - 8.).clamp(1., 370.);
+        let max_height = (f32::from(viewport.height) - 60.).clamp(1., 335.);
+        let top = (detail.anchor_y - px(35.)).max(px(36.));
+        let id = detail.account;
+        let bounds = self.detail_bounds.clone();
+        Some(
+            anchored()
+                .position(point(px(side), top))
+                .snap_to_window_with_margin(px(8.))
+                .child(
+                    div()
+                        .id("account-detail")
+                        .w(px(width))
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(colors().line))
+                        .bg(rgb(colors().panel))
+                        .shadow_lg()
+                        .child(
+                            canvas(move |area, _, _| bounds.set(Some(area)), |_, _, _, _| {})
+                                .absolute()
+                                .inset_0(),
+                        )
+                        .child(
+                            div()
+                                .id("account-detail-scroll")
+                                .w_full()
+                                .max_h(px(max_height))
+                                .overflow_y_scroll()
+                                .occlude()
+                                .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, _| {
+                                    this.detail_open_timer = None;
+                                    this.detail_close_timer = None;
+                                }))
+                                .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                                    if !*hovered && !detail.keyboard {
+                                        this.schedule_detail_close(id, window, cx);
+                                    }
+                                }))
+                                .child(self.render_detail_content(
+                                    account,
+                                    self.workspace.active_account_id(),
+                                    cx,
+                                )),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     fn render_invite_row(&self, id: AccountId, cx: &Context<Self>) -> Div {
@@ -566,13 +793,6 @@ impl MuseWindow {
 
     #[inline(never)]
     fn render_expanded_accounts(&self, width: f32, cx: &Context<Self>) -> Div {
-        let selected = self.workspace.active_account_id();
-        let rows = self
-            .workspace
-            .accounts
-            .iter()
-            .map(|account| self.render_account_row(account, selected, cx))
-            .collect::<Vec<_>>();
         div()
             .w(px(width))
             .flex_none()
@@ -610,6 +830,7 @@ impl MuseWindow {
                             .child(self.workspace.accounts.len().to_string()),
                     )
                     .child(div().flex_1())
+                    .child(self.new_group_button(cx))
                     .child(icon_button(
                         "sidebar-add",
                         "plus",
@@ -628,7 +849,7 @@ impl MuseWindow {
                     .min_h_0()
                     .overflow_y_scroll()
                     .pb_2()
-                    .children(rows),
+                    .children(self.render_account_sections(false, cx)),
             )
             .child(
                 div()
@@ -713,61 +934,9 @@ impl MuseWindow {
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
-                    .items_center()
-                    .gap_1()
-                    .children(self.workspace.accounts.iter().map(|account| {
-                        let id = account.id;
-                        let active =
-                            !self.show_start_page && self.workspace.active_account_id() == Some(id);
-                        let name = account.name.clone();
-                        div()
-                            .id(id)
-                            .size(px(48.))
-                            .flex_none()
-                            .relative()
-                            .rounded_lg()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .when(!active, |element| {
-                                element.hover(|s| s.bg(rgb(colors().fill_hover)))
-                            })
-                            .when(active, |element| {
-                                element.child(self.selection_layer(SharedString::from(format!(
-                                    "compact-selection-{id}"
-                                ))))
-                            })
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| super::chrome::AccountHint(name.clone())).into()
-                            })
-                            .child(
-                                div()
-                                    .relative()
-                                    .child(self.account_avatar(account, 34., active))
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .right_0()
-                                            .bottom_0()
-                                            .child(self.account_running_dot(id, cx)),
-                                    ),
-                            )
-                            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                                this.hover_account(id, *hovered, cx)
-                            }))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_account(id, window, cx)
-                            }))
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.show_account_menu(id, event.position, window, cx);
-                                }),
-                            )
-                    })),
+                    .children(self.render_account_sections(true, cx)),
             )
+            .child(self.new_group_button(cx))
             .child(icon_button(
                 "compact-add",
                 "plus",
@@ -794,6 +963,146 @@ impl MuseWindow {
                 false,
                 cx.listener(|this, _, window, cx| this.show_updates(window, cx)),
             ))
+    }
+
+    fn new_group_button(&self, cx: &Context<Self>) -> Stateful<Div> {
+        icon_button(
+            "sidebar-new-group",
+            "folder",
+            "新建分组",
+            true,
+            false,
+            cx.listener(|this, _, window, cx| {
+                this.open_group_dialog(GroupOperation::Name(None), window, cx)
+            }),
+        )
+    }
+
+    fn render_account_sections(&self, compact: bool, cx: &Context<Self>) -> Vec<AnyElement> {
+        let mut accounts_by_group: HashMap<Option<Uuid>, Vec<&muse_core::Account>> = HashMap::new();
+        for account in &self.workspace.accounts {
+            accounts_by_group
+                .entry(self.account_groups.membership(account.id))
+                .or_default()
+                .push(account);
+        }
+        self.account_groups
+            .groups
+            .iter()
+            .map(|group| (Some(group.id), group.name.as_str(), group.collapsed))
+            .chain(std::iter::once((
+                None,
+                UNGROUPED,
+                self.account_groups.ungrouped_collapsed,
+            )))
+            .map(|(id, name, collapsed)| {
+                let accounts = accounts_by_group.remove(&id).unwrap_or_default();
+                self.render_account_section(id, name, collapsed, &accounts, compact, cx)
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    #[inline(never)]
+    fn render_account_section(
+        &self,
+        id: Option<Uuid>,
+        name: &str,
+        collapsed: bool,
+        accounts: &[&muse_core::Account],
+        compact: bool,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let title = name.to_owned();
+        let header = div()
+            .id(SharedString::from(id.map_or_else(
+                || "group-ungrouped".to_owned(),
+                |id| format!("group-{id}"),
+            )))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .py_1()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(colors().fill_hover)))
+            .child(glyph(
+                if collapsed {
+                    "chevron-right"
+                } else {
+                    "chevron-down"
+                },
+                12.,
+                colors().muted,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(colors().secondary))
+                    .child(name.to_owned()),
+            )
+            .when(!compact, |element| {
+                element.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(rgb(colors().muted))
+                        .child(accounts.len().to_string()),
+                )
+            })
+            .tooltip(move |_, cx| cx.new(|_| super::chrome::AccountHint(title.clone())).into())
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_account_group(id, cx)))
+            .when_some(id, |element, id| {
+                element.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, _, window, cx| {
+                        this.open_group_dialog(GroupOperation::Name(Some(id)), window, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+            });
+        div()
+            .id(SharedString::from(id.map_or_else(
+                || "ungrouped-section".to_owned(),
+                |id| format!("section-{id}"),
+            )))
+            .flex()
+            .flex_col()
+            .mb_1()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .when(compact, |element| element.mx_1())
+                    .when(!compact, |element| element.mx_3())
+                    .child(header)
+                    .when_some(id.filter(|_| !compact), |element, id| {
+                        element.child(icon_button(
+                            "edit-group",
+                            "pencil",
+                            "编辑分组",
+                            true,
+                            false,
+                            cx.listener(move |this, _, window, cx| {
+                                this.open_group_dialog(GroupOperation::Name(Some(id)), window, cx)
+                            }),
+                        ))
+                    }),
+            )
+            .when(!collapsed, |element| {
+                element.children(
+                    accounts
+                        .iter()
+                        .map(|account| self.render_account_row(account, compact, cx)),
+                )
+            })
     }
     #[inline(never)]
     fn render_home_card(&self, compact: bool, cx: &Context<Self>) -> Stateful<Div> {
@@ -855,36 +1164,17 @@ impl MuseWindow {
                 )
         }
     }
-    fn account_running_dot(&self, id: AccountId, _cx: &Context<Self>) -> Stateful<Div> {
-        let running = self.browsers.account_running(id);
-        let ready = self.browsers.account_ready(id);
-        let sleeping = self.browsers.account_sleeping(id);
-        let label = if sleeping {
-            "休眠中 · 点击账号或发送任务时自动唤醒"
-        } else if ready {
-            "已启动"
-        } else if running {
-            "启动中"
-        } else {
-            "未启动"
-        };
-        div()
-            .id(SharedString::from(format!("running-{id}")))
-            .size(px(11.))
-            .flex_none()
-            .rounded_full()
-            .border_2()
-            .border_color(rgb(colors().panel))
-            .bg(rgb(if sleeping {
-                0xA7C7B7
-            } else if ready {
-                0x35B77A
-            } else if running {
-                0xEAB35A
-            } else {
-                tone(0xDBDCDF, 0x60606D)
-            }))
-            .tooltip(move |_, cx| cx.new(|_| super::chrome::AccountHint(label.into())).into())
+    pub(super) fn clear_untethered_account_detail(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !window.is_window_active()
+            || (!window.is_window_hovered()
+                && self.account_detail.is_none_or(|detail| !detail.keyboard))
+        {
+            self.clear_account_detail(cx);
+        }
     }
     fn show_account_menu(
         &mut self,
@@ -895,6 +1185,7 @@ impl MuseWindow {
     ) {
         if self.account_dialog.is_none() && self.cookie_dialog.is_none() {
             self.account_context = Some((id, position, TransitionState::entering()));
+            self.clear_account_detail(cx);
             window.focus(&self.focus);
             self.ensure_page_freeze();
             self.browsers
@@ -927,7 +1218,7 @@ impl MuseWindow {
         );
     }
 
-    pub(super) fn render_account_context(&self, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn render_account_context(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let (id, position, transition) = self.account_context.unwrap();
         let accepts_action = move |this: &Self| {
             !transition.is_exiting()
@@ -940,8 +1231,9 @@ impl MuseWindow {
             .account(id)
             .map(|a| a.name.clone())
             .unwrap_or_default();
-        let x = f32::from(position.x).clamp(8., 300.);
-        let y = f32::from(position.y).clamp(8., 620.);
+        let viewport = window.viewport_size();
+        let x = f32::from(position.x).clamp(8., (f32::from(viewport.width) - 240.).max(8.));
+        let y = f32::from(position.y).clamp(8., (f32::from(viewport.height) - 290.).max(8.));
         let item = |key: &'static str, icon: &'static str, label: &'static str, danger: bool| {
             div()
                 .id(key)
@@ -977,6 +1269,11 @@ impl MuseWindow {
                 .child(label)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if !accepts_action(this) {
+                        return;
+                    }
+                    if key == "context-group" {
+                        this.account_context = None;
+                        this.open_group_dialog(GroupOperation::Move(id), window, cx);
                         return;
                     }
                     this.dismiss_account_context(window, cx);
@@ -1029,6 +1326,7 @@ impl MuseWindow {
                     )
                     .child(item("context-refresh", "reload", "刷新账号信息", false))
                     .child(item("context-edit", "pencil", "编辑账号", false))
+                    .child(item("context-group", "folder", "移动到分组…", false))
                     .child(
                         div()
                             .mx_2()

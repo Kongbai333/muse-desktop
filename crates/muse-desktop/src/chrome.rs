@@ -1364,6 +1364,10 @@ impl MuseWindow {
 
 impl Render for MuseWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.prepare_account_rows(cx);
+        if self.has_browser_overlay() || self.sidebar_dragging {
+            self.clear_account_detail(cx);
+        }
         let now = Instant::now();
         let inspector_target = self.inspector_target();
         self.inspector_motion.retarget(
@@ -1399,11 +1403,18 @@ impl Render for MuseWindow {
         } else {
             self.status.clone()
         };
+        let details = self.render_account_detail(
+            layout.sidebar_extent() - divider_width,
+            window.viewport_size(),
+            cx,
+        );
         div()
             .key_context(if self.updates.open {
                 "UpdateDialog"
             } else if self.transfer_dialog.is_some() {
                 "TransferDialog"
+            } else if self.group_dialog.is_some() {
+                "GroupDialog"
             } else if self.account_dialog.is_some() {
                 "Muse AccountDialog"
             } else if self.cookie_dialog.is_some() {
@@ -1439,6 +1450,8 @@ impl Render for MuseWindow {
             .on_action(cx.listener(|this, _: &DismissStudioPanels, window, cx| {
                 if this.has_browser_overlay() {
                     this.dismiss_browser_overlay(window, cx);
+                } else if this.account_detail.is_some() {
+                    this.clear_account_detail(cx);
                 } else if this.studio.viewer.is_some() {
                     this.close_studio_image(window, cx);
                 } else {
@@ -1453,6 +1466,19 @@ impl Render for MuseWindow {
                     this.submit_transfer(window, cx);
                 } else {
                     this.save_account_dialog(window, cx);
+                }
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.group_dialog.is_some() {
+                    this.group_dialog_key(&event.keystroke, window, cx);
+                } else if event.keystroke.key == "tab" && !this.has_browser_overlay() {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                    this.clear_account_detail(cx);
+                    cx.stop_propagation();
                 }
             }))
             .on_mouse_move(cx.listener(Self::drag_sidebar))
@@ -1561,8 +1587,9 @@ impl Render for MuseWindow {
                 self.show_start_page && self.studio.viewer.is_some(),
                 |element| element.child(self.render_studio_image_overlay(window, cx)),
             )
+            .children(details)
             .when(self.account_context.is_some(), |element| {
-                element.child(self.render_account_context(cx))
+                element.child(self.render_account_context(window, cx))
             })
             .when(self.account_dialog.is_some(), |element| {
                 element.child(self.render_account_dialog(window, cx))
@@ -1575,6 +1602,9 @@ impl Render for MuseWindow {
             })
             .when(self.updates.open, |element| {
                 element.child(self.render_updates(cx))
+            })
+            .when(self.group_dialog.is_some(), |element| {
+                element.child(self.render_group_dialog(cx))
             })
             .child(self.studio_layout_probe("root"))
     }

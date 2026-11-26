@@ -1745,13 +1745,13 @@ impl MuseWindow {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum ButtonKind {
+pub(super) enum ButtonKind {
     Primary,
     Secondary,
     Danger,
 }
 
-fn dialog_button(
+pub(super) fn dialog_button(
     id: &'static str,
     label: impl Into<SharedString>,
     kind: ButtonKind,
@@ -1889,7 +1889,7 @@ fn field_box(input: Entity<TextInput>) -> Div {
         .child(input)
 }
 
-fn dialog_field(label: &'static str, input: Entity<TextInput>) -> Div {
+pub(super) fn dialog_field(label: &'static str, input: Entity<TextInput>) -> Div {
     div()
         .flex()
         .flex_col()
