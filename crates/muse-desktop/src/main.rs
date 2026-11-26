@@ -4,6 +4,7 @@
 compile_error!("Muse Desktop currently supports Windows x64 only.");
 
 mod account_cache;
+mod account_groups;
 mod account_settings;
 mod account_transfer;
 mod assets;

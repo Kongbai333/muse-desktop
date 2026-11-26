@@ -113,6 +113,14 @@ pub struct MuseWindow {
     sidebar: crate::sidebar_state::SidebarState,
     sidebar_motion: crate::motion::MotionValue,
     sidebar_dragging: bool,
+    account_groups: crate::account_groups::AccountGroups,
+    account_group_error: Option<String>,
+    group_dialog: Option<group_ui::GroupDialog>,
+    account_focus: HashMap<AccountId, FocusHandle>,
+    account_detail: Option<account_cards::AccountDetail>,
+    detail_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    detail_open_timer: Option<(AccountId, Task<()>)>,
+    detail_close_timer: Option<Task<()>>,
     inspector_open: bool,
     inspector_motion: crate::motion::MotionValue,
     motion_policy: crate::motion::MotionPolicy,
@@ -262,6 +270,11 @@ impl MuseWindow {
             Err(error) => (None, Some(error)),
         };
         let sidebar = crate::sidebar_state::SidebarState::load(&data_dir);
+        let (account_groups, account_group_error) =
+            match crate::account_groups::AccountGroups::load(&data_dir) {
+                Ok(groups) => (groups, None),
+                Err(error) => (Default::default(), Some(error)),
+            };
         let motion_policy = crate::motion::MotionPolicy::system();
         let motion_started = Instant::now();
         let sidebar_extent = sidebar.preferred_extent();
@@ -350,6 +363,14 @@ impl MuseWindow {
             sidebar,
             sidebar_motion,
             sidebar_dragging: false,
+            account_groups,
+            account_group_error,
+            group_dialog: None,
+            account_focus: HashMap::new(),
+            account_detail: None,
+            detail_bounds: Default::default(),
+            detail_open_timer: None,
+            detail_close_timer: None,
             inspector_open: false,
             inspector_motion,
             motion_policy,
@@ -436,14 +457,16 @@ impl MuseWindow {
     /// hide the live page. Before hiding it, a still frame is captured and shown
     /// in its place, so the page never turns blank behind an overlay.
     fn page_frozen(&self) -> bool {
-        !self.show_start_page && self.has_browser_overlay() && !self.proxy_drawer_visible()
+        !self.show_start_page
+            && (self.has_browser_overlay() || self.account_detail.is_some())
+            && !self.proxy_drawer_visible()
     }
 
     /// Captures the active page in the background while nothing covers it.
     /// Called while the pointer moves over the sidebar, where every menu and
     /// dialog is opened from; throttled to one capture every 1.5 seconds.
     pub(super) fn prefetch_page_snapshot(&mut self) {
-        if self.smoke.is_some() || self.show_start_page || self.has_browser_overlay() {
+        if self.smoke.is_some() || self.show_start_page || self.page_frozen() {
             return;
         }
         let Some(identity) = self.workspace.active_browser_identity() else {
@@ -513,6 +536,7 @@ impl MuseWindow {
             || self.transfer_dialog.is_some()
             || self.cookie_dialog.is_some()
             || self.account_context.is_some()
+            || self.group_dialog.is_some()
     }
 
     fn dismiss_browser_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -524,6 +548,8 @@ impl MuseWindow {
             self.close_account_dialog(window, cx);
         } else if self.cookie_dialog.is_some() {
             self.close_cookie_dialog(window, cx);
+        } else if self.group_dialog.is_some() {
+            self.close_group_dialog(window, cx);
         } else if self.account_context.is_some() {
             self.dismiss_account_context(window, cx);
         }
@@ -735,6 +761,7 @@ impl MuseWindow {
     }
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_untethered_account_detail(window, cx);
         let committing = self.transfer_commit_pending();
         self.poll_transfer(window, cx);
         if committing || self.transfer_commit_pending() {
@@ -1431,6 +1458,10 @@ impl MuseWindow {
     }
 
     fn submit_address(&mut self, _: &SubmitAddress, window: &mut Window, cx: &mut Context<Self>) {
+        if self.group_dialog.is_some() {
+            self.submit_group_dialog(window, cx);
+            return;
+        }
         if self.transfer_dialog.is_some() {
             self.submit_transfer(window, cx);
             return;
@@ -1488,6 +1519,7 @@ impl MuseWindow {
         if self.has_browser_overlay() {
             return;
         }
+        self.clear_account_detail(cx);
         self.capture_page_zoom();
         if self.show_start_page || self.workspace.active_account_id() != Some(id) {
             self.navigation_transition = crate::motion::TransitionState::entering();
@@ -2035,6 +2067,8 @@ mod account_cards;
 mod account_dialog;
 #[path = "cookie_ui.rs"]
 mod cookie_ui;
+#[path = "group_ui.rs"]
+mod group_ui;
 #[path = "studio_composer.rs"]
 mod studio_composer;
 #[path = "studio_jobs.rs"]
