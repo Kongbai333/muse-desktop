@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde_yaml_ng = "=0.10.0"
 muse-core = { path = "../muse-core" }
 muse-proxy = { path = "../muse-proxy" }
 gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }

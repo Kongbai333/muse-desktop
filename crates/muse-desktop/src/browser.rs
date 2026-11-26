@@ -148,8 +148,16 @@ pub struct BrowserPool {
     data_root: PathBuf,
     display: Cell<muse_core::DisplayPreferences>,
     routes: HashMap<muse_core::AccountId, Arc<AccountRoute>>,
+    bindings: HashMap<
+        muse_core::AccountId,
+        (
+            AccountNetwork,
+            Option<(muse_core::AccountId, Option<uuid::Uuid>)>,
+        ),
+    >,
     failures: HashMap<BrowserIdentity, String>,
     closing: HashMap<muse_core::AccountId, Vec<ClosingProcess>>,
+    unverified_close: HashSet<muse_core::AccountId>,
     profiles: ProfileBindings,
     observations: HashMap<BrowserIdentity, ObserverFlags>,
     background: HashSet<BrowserIdentity>,
@@ -283,8 +291,10 @@ impl BrowserPool {
             data_root,
             display: Cell::new(display),
             routes: HashMap::new(),
+            bindings: HashMap::new(),
             failures: HashMap::new(),
             closing: HashMap::new(),
+            unverified_close: HashSet::new(),
             profiles: ProfileBindings::default(),
             observations: HashMap::new(),
             background: HashSet::new(),
@@ -426,6 +436,28 @@ impl BrowserPool {
             proxy_credentials,
             diagnostic_origin,
         } = request;
+        let credential = if network == AccountNetwork::Direct {
+            None
+        } else {
+            match proxy_credentials {
+                Ok(key) => Some(key),
+                Err(error) => {
+                    self.invalidate_account(identity.account_id);
+                    return Err(error);
+                }
+            }
+        };
+        let binding = (network, credential);
+        if self
+            .bindings
+            .get(&identity.account_id)
+            .is_some_and(|previous| *previous != binding)
+        {
+            self.invalidate_account(identity.account_id);
+        }
+        if self.unverified_close.contains(&identity.account_id) {
+            return Err("无法核验旧浏览器已退出。请关闭并重开应用；未复用旧出口".into());
+        }
         #[cfg(target_os = "windows")]
         if let Some(processes) = self.closing.get(&identity.account_id) {
             use windows::Win32::{
@@ -439,6 +471,7 @@ impl BrowserPool {
             }
         }
         self.closing.remove(&identity.account_id);
+        self.bindings.insert(identity.account_id, binding);
         if self
             .tabs
             .get(&identity.tab_id)
@@ -457,10 +490,15 @@ impl BrowserPool {
                 Some(route.clone())
             } else {
                 let result = (|| {
-                    let (id, revision) = proxy_credentials?;
+                    let (id, revision) = credential.ok_or("账号出口缺失；未打开页面")?;
                     let secret = crate::secrets::ProtectedStore::new(&self.data_root)
                         .load_selected(id, revision)?;
                     let upstream = Upstream::parse(secret.as_str()).map_err(|e| e.to_string())?;
+                    let upstream = if matches!(network, AccountNetwork::SubscriptionNode { .. }) {
+                        upstream.fixed_node()
+                    } else {
+                        upstream
+                    };
                     AccountRoute::start(
                         upstream,
                         TraceContext {
@@ -624,7 +662,8 @@ impl BrowserPool {
             let mut arguments =
                 "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection".to_owned();
             if let Some(route) = &route {
-                arguments = route.arguments(network.force_proxy());
+                arguments.push(' ');
+                arguments.push_str(&route.arguments(network.force_proxy()));
             }
             // Account tabs, popups re-opened as tabs, and internal readers must
             // use identical environment language/options with the same profile.
@@ -1232,12 +1271,15 @@ impl BrowserPool {
                 .filter(|tab| tab.identity.account_id == id)
             {
                 let mut pid = 0;
-                if unsafe { tab.view.webview().BrowserProcessId(&mut pid) }.is_ok()
-                    && pid != 0
-                    && seen.insert(pid)
-                    && let Ok(handle) = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }
-                {
-                    processes.push(ClosingProcess(handle));
+                if unsafe { tab.view.webview().BrowserProcessId(&mut pid) }.is_err() || pid == 0 {
+                    self.unverified_close.insert(id);
+                } else if seen.insert(pid) {
+                    match unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
+                        Ok(handle) => processes.push(ClosingProcess(handle)),
+                        Err(_) => {
+                            self.unverified_close.insert(id);
+                        }
+                    }
                 }
             }
             if !processes.is_empty() {
@@ -1246,6 +1288,7 @@ impl BrowserPool {
         }
         self.tabs.retain(|_, tab| tab.identity.account_id != id);
         self.routes.remove(&id);
+        self.bindings.remove(&id);
         self.failures
             .retain(|identity, _| identity.account_id != id);
         self.observations

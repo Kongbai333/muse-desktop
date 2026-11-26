@@ -150,6 +150,7 @@ pub struct MuseWindow {
     invite_next: HashMap<AccountId, Instant>,
     account_dialog: Option<account_dialog::AccountDialog>,
     account_dialog_return: Option<account_dialog::AccountDialog>,
+    pool_window: Option<WindowHandle<account_dialog::PoolWindow>>,
     cached_accounts: HashSet<AccountId>,
     refresh_accounts: HashMap<AccountId, (muse_core::BrowserIdentity, Instant)>,
     studio: crate::studio::Studio,
@@ -178,6 +179,7 @@ impl MuseWindow {
         if !smoke && startup_error.is_none() {
             startup_error = crate::proxy_pool::migrate(&data_dir, &mut workspace).err();
         }
+        crate::subscriptions::hydrate(&data_dir, &mut workspace);
         if workspace.accounts.is_empty() {
             workspace.add_account("主账号");
         }
@@ -395,6 +397,7 @@ impl MuseWindow {
             invite_next,
             account_dialog: None,
             account_dialog_return: None,
+            pool_window: None,
             cached_accounts,
             refresh_accounts: HashMap::new(),
             studio,
@@ -429,27 +432,15 @@ impl MuseWindow {
         self.pending_window_save = None;
     }
 
-    /// The proxy pool is a side sheet: the page stays visible beside it.
     pub(super) fn proxy_drawer_visible(&self) -> bool {
-        self.transfer_dialog.is_none()
-            && self.cookie_dialog.is_none()
-            && self.account_context.is_none()
-            && self
-                .account_dialog
-                .as_ref()
-                .is_some_and(|dialog| dialog.is_drawer())
+        self.account_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.is_drawer())
     }
 
     pub(super) fn inspector_target(&self) -> f32 {
         if self.inspector_open {
             crate::theme::INSPECTOR
-        } else if self.proxy_drawer_visible()
-            && self
-                .account_dialog
-                .as_ref()
-                .is_some_and(|dialog| !dialog.transition_exiting())
-        {
-            crate::theme::DRAWER
         } else {
             0.
         }
@@ -534,7 +525,7 @@ impl MuseWindow {
 
     fn has_browser_overlay(&self) -> bool {
         self.updates.open
-            || self.account_dialog.is_some()
+            || (self.account_dialog.is_some() && !self.proxy_drawer_visible())
             || self.transfer_dialog.is_some()
             || self.cookie_dialog.is_some()
             || self.account_context.is_some()
@@ -689,6 +680,11 @@ impl MuseWindow {
     }
 
     fn ensure_active(&mut self, window: &Window) {
+        if !self.save_enabled {
+            self.browsers
+                .sync_visibility(None, self.browser_bounds(window));
+            return;
+        }
         self.browsers.retain_registered(&self.workspace);
         if self.show_start_page {
             self.browsers
@@ -1207,6 +1203,9 @@ impl MuseWindow {
         identity: muse_core::BrowserIdentity,
         window: &Window,
     ) -> Result<(), String> {
+        if !self.save_enabled {
+            return Err("账号配置无法读取；未打开网页".into());
+        }
         let account = self
             .workspace
             .account(identity.account_id)

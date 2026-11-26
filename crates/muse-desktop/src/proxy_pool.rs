@@ -91,6 +91,7 @@ pub enum RouteChoice {
     System,
     Legacy,
     Pool(Uuid),
+    Node(Uuid),
 }
 
 impl From<AccountNetwork> for RouteChoice {
@@ -99,6 +100,7 @@ impl From<AccountNetwork> for RouteChoice {
             AccountNetwork::Direct => Self::System,
             AccountNetwork::HttpProxy { .. } => Self::Legacy,
             AccountNetwork::PoolProxy { proxy_id, .. } => Self::Pool(proxy_id),
+            AccountNetwork::SubscriptionNode { node_id, .. } => Self::Node(node_id),
         }
     }
 }
@@ -273,6 +275,20 @@ pub fn prepare_account(
             }
         }
         RouteChoice::System => AccountNetwork::Direct,
+        RouteChoice::Node(node_id) => {
+            let revision = workspace
+                .subscriptions
+                .iter()
+                .flat_map(|sub| &sub.nodes)
+                .find(|node| node.id == node_id)
+                .and_then(|node| node.revision)
+                .ok_or("订阅节点不可用；请选择可用节点")?;
+            ProtectedStore::new(root).load_selected(node_id, Some(revision))?;
+            AccountNetwork::SubscriptionNode {
+                node_id,
+                force_proxy,
+            }
+        }
         RouteChoice::Legacy => owner
             .and_then(|id| workspace.account(id))
             .map(|account| account.network)

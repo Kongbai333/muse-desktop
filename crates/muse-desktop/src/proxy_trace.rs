@@ -375,7 +375,7 @@ pub fn binding(network: AccountNetwork) -> Binding {
     match network {
         AccountNetwork::Direct => Binding::Direct,
         AccountNetwork::HttpProxy { .. } => Binding::Legacy,
-        AccountNetwork::PoolProxy { .. } => Binding::Pool,
+        AccountNetwork::PoolProxy { .. } | AccountNetwork::SubscriptionNode { .. } => Binding::Pool,
     }
 }
 pub fn action(identity: BrowserIdentity, mut context: Context, outcome: Outcome) {

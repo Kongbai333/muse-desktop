@@ -35,9 +35,11 @@ impl AccountRoute {
                 ProxyProtocol::Http => RoutePath::SystemHttpBridge,
                 ProxyProtocol::Https => RoutePath::SystemHttpsBridge,
                 ProxyProtocol::Socks5 => RoutePath::SystemSocks5Bridge,
+                ProxyProtocol::Shadowsocks => return Err("订阅节点不支持前置代理".into()),
             }
         } else {
             match (upstream.protocol(), authenticated, scoped_auth) {
+                (ProxyProtocol::Shadowsocks, _, _) => RoutePath::ShadowsocksBridge,
                 (ProxyProtocol::Socks5, true, _) => RoutePath::Socks5AuthBridge,
                 (ProxyProtocol::Http, true, false) => RoutePath::HttpAuthBridge,
                 (ProxyProtocol::Https, true, false) => RoutePath::HttpsAuthBridge,
@@ -67,7 +69,8 @@ impl AccountRoute {
         .map_err(|_| "代理端点无效")?;
         let bridge = if matches!(
             path,
-            RoutePath::Socks5AuthBridge
+            RoutePath::ShadowsocksBridge
+                | RoutePath::Socks5AuthBridge
                 | RoutePath::HttpAuthBridge
                 | RoutePath::HttpsAuthBridge
                 | RoutePath::SystemHttpBridge
@@ -102,6 +105,7 @@ impl AccountRoute {
     }
     pub fn label(&self) -> &'static str {
         match self.context.route_path {
+            Some(RoutePath::ShadowsocksBridge) => "固定 Shadowsocks AEAD 节点",
             Some(RoutePath::SystemHttpBridge) => "系统回环前置 → 账号 HTTP 代理",
             Some(RoutePath::SystemHttpsBridge) => "系统回环前置 → 账号 HTTPS 代理",
             Some(RoutePath::SystemSocks5Bridge) => "系统回环前置 → 账号 SOCKS5 代理",
@@ -122,7 +126,7 @@ impl AccountRoute {
             .map(|b| format!("http://{}", b.address()))
             .unwrap_or_else(|| self.endpoint.as_str().trim_end_matches('/').to_owned());
         format!(
-            "--proxy-server={endpoint}{}",
+            "--disable-quic --force-webrtc-ip-handling-policy=disable_non_proxied_udp --proxy-server={endpoint}{}",
             if force {
                 " --proxy-bypass-list=<-loopback>"
             } else {

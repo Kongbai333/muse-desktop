@@ -67,6 +67,7 @@ pub enum ProxyProtocol {
     Http,
     Https,
     Socks5,
+    Shadowsocks,
 }
 
 impl ProxyProtocol {
@@ -77,6 +78,7 @@ impl ProxyProtocol {
             Self::Http => "http",
             Self::Https => "https",
             Self::Socks5 => "socks5",
+            Self::Shadowsocks => "ss",
         }
     }
 
@@ -85,6 +87,7 @@ impl ProxyProtocol {
             Self::Http => "HTTP",
             Self::Https => "HTTPS",
             Self::Socks5 => "SOCKS5",
+            Self::Shadowsocks => "Shadowsocks AEAD",
         }
     }
 
@@ -93,6 +96,7 @@ impl ProxyProtocol {
             Self::Http => 80,
             Self::Https => 443,
             Self::Socks5 => 1080,
+            Self::Shadowsocks => 8388,
         }
     }
 }
@@ -147,6 +151,8 @@ impl std::error::Error for ProxyError {}
 
 #[derive(Clone)]
 pub struct Upstream {
+    ss: Option<Arc<shadowsocks::ServerConfig>>,
+    fixed_node: bool,
     protocol: ProxyProtocol,
     credentials: Option<(String, String)>,
     host: String,
@@ -174,6 +180,7 @@ impl Upstream {
         };
         let url = url::Url::parse(&normalized).map_err(|_| ProxyError::Invalid)?;
         let protocol = match url.scheme() {
+            "ss" => ProxyProtocol::Shadowsocks,
             "http" => ProxyProtocol::Http,
             "https" => ProxyProtocol::Https,
             "socks" | "socks5" | "socks5h" => ProxyProtocol::Socks5,
@@ -227,14 +234,37 @@ impl Upstream {
             }
             Some((user, secret))
         };
-        let authorization = if protocol == ProxyProtocol::Socks5 {
-            None
+        let ss = if protocol == ProxyProtocol::Shadowsocks {
+            let (cipher, password) = credentials.as_ref().ok_or(ProxyError::Invalid)?;
+            if !matches!(
+                cipher.as_str(),
+                "aes-128-gcm" | "aes-256-gcm" | "chacha20-ietf-poly1305"
+            ) || password.is_empty()
+            {
+                return Err(ProxyError::Unsupported);
+            }
+            Some(Arc::new(
+                shadowsocks::ServerConfig::new(
+                    (host.clone(), port),
+                    password.clone(),
+                    cipher.parse().map_err(|_| ProxyError::Unsupported)?,
+                )
+                .map_err(|_| ProxyError::Invalid)?,
+            ))
         } else {
-            credentials.as_ref().map(|(user, secret)| {
-                format!("Basic {}", STANDARD.encode(format!("{user}:{secret}")))
-            })
+            None
         };
+        let authorization =
+            if matches!(protocol, ProxyProtocol::Socks5 | ProxyProtocol::Shadowsocks) {
+                None
+            } else {
+                credentials.as_ref().map(|(user, secret)| {
+                    format!("Basic {}", STANDARD.encode(format!("{user}:{secret}")))
+                })
+            };
         Ok(Self {
+            ss,
+            fixed_node: protocol == ProxyProtocol::Shadowsocks,
             protocol,
             credentials,
             host,
@@ -245,6 +275,10 @@ impl Upstream {
 
     pub fn protocol(&self) -> ProxyProtocol {
         self.protocol
+    }
+    pub fn fixed_node(mut self) -> Self {
+        self.fixed_node = true;
+        self
     }
 
     pub fn host(&self) -> &str {
@@ -288,8 +322,8 @@ impl Upstream {
             context.action = trace::new_id();
         }
         context.protocol = Some(self.protocol);
-        context.transport = Some(transport::trace_kind());
-        if system_transport_enabled() {
+        context.transport = Some(transport::trace_kind(self));
+        if validate_system_upstream(self)? {
             context.route_path = Some(transport::route_path(self.protocol));
         }
         context.destination = Some(trace::Destination::Muse);
@@ -297,7 +331,11 @@ impl Upstream {
         TraceEvent::new(context, TraceStage::ProbeStart, TraceOutcome::Start).emit();
         let span = TraceSpan::new(context, TraceStage::ProbeEnd);
         let target = Authority::from_static("muse.ai:443");
-        let result = connect_tunnel(self, &target, context).await.map(|_| ());
+        let result = if self.ss.is_some() {
+            Err(ProxyError::Unsupported)
+        } else {
+            connect_tunnel(self, &target, context).await.map(|_| ())
+        };
         span.end(
             result
                 .as_ref()
@@ -370,8 +408,8 @@ impl ProxyBridge {
         context.route = upstream.trace_route_id();
         context.bridge = trace::new_id();
         context.protocol = Some(upstream.protocol);
-        context.transport = Some(transport::trace_kind());
-        if system_transport_enabled() {
+        context.transport = Some(transport::trace_kind(&upstream));
+        if validate_system_upstream(&upstream)? {
             context.route_path = Some(transport::route_path(upstream.protocol));
         }
         context.source = Some(TraceSource::Bridge);
@@ -673,7 +711,7 @@ async fn handle(
     let mut pending = TraceStage::ProviderTcp;
     let socket = match timeout(DEADLINE, async {
         match upstream.protocol {
-            ProxyProtocol::Socks5 => {
+            ProxyProtocol::Socks5 | ProxyProtocol::Shadowsocks => {
                 connect_socks(&upstream, &target, 80, context, &mut pending).await
             }
             _ => connect_http_proxy(&upstream, context, &mut pending).await,
@@ -711,7 +749,10 @@ async fn handle(
         tokio::select! { biased; _ = cancel.cancelled() => {}, _ = connection => {} }
     });
     strip_hop(request.headers_mut());
-    if upstream.protocol == ProxyProtocol::Socks5 {
+    if matches!(
+        upstream.protocol,
+        ProxyProtocol::Socks5 | ProxyProtocol::Shadowsocks
+    ) {
         let path = request
             .uri()
             .path_and_query()
@@ -775,7 +816,10 @@ async fn connect_tunnel(
     let tunnel = TraceSpan::new(context, TraceStage::TunnelEstablished);
     let mut pending = TraceStage::ProviderTcp;
     let result = timeout(DEADLINE, async {
-        if upstream.protocol == ProxyProtocol::Socks5 {
+        if matches!(
+            upstream.protocol,
+            ProxyProtocol::Socks5 | ProxyProtocol::Shadowsocks
+        ) {
             return connect_socks(upstream, authority, 443, context, &mut pending)
                 .await
                 .map(|stream| (stream, Vec::new()));
@@ -876,9 +920,26 @@ async fn connect_socks(
     let target = (
         authority.host().trim_matches(['[', ']']),
         authority.port_u16().unwrap_or(default_port),
-    )
-        .to_target_addr()
-        .map_err(|_| ProxyError::Invalid)?;
+    );
+    if let Some(config) = &upstream.ss {
+        use shadowsocks::{
+            ProxyClientStream, config::ServerType, context::Context, relay::socks5::Address,
+        };
+        let address = match target.0.parse::<std::net::IpAddr>() {
+            Ok(ip) => Address::SocketAddress((ip, target.1).into()),
+            Err(_) if target.0.len() <= 255 => {
+                Address::DomainNameAddress(target.0.to_owned(), target.1)
+            }
+            Err(_) => return Err(ProxyError::Invalid),
+        };
+        return Ok(Box::new(ProxyClientStream::from_stream(
+            Context::new_shared(ServerType::Local),
+            socket,
+            config,
+            address,
+        )));
+    }
+    let target = target.to_target_addr().map_err(|_| ProxyError::Invalid)?;
     let auth = match &upstream.credentials {
         Some((user, secret)) => {
             let secret = if secret.is_empty() {

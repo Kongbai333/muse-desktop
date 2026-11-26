@@ -36,6 +36,13 @@ on the existing Tokio runtime. New transitive components are tokio-stream
 Their original license notices are included under LICENSES/.
 No independent proxy engine executable or Go runtime is distributed.
 
+Fixed subscription nodes use the embedded shadowsocks 1.23.2 TCP client
+(MIT, https://github.com/shadowsocks/shadowsocks-rust), shadowsocks-crypto
+and its AEAD dependencies. Clash YAML uses serde_yaml_ng 0.10.0
+(MIT, https://github.com/acatton/serde-yaml-ng) and unsafe-libyaml.
+License texts for the additional Windows dependencies are under LICENSES/.
+No protocol executable, plugin, external provider or script is downloaded.
+
 Official sources:
 https://github.com/dizda/fast-socks5
 https://github.com/tokio-rs/tokio

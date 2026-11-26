@@ -47,6 +47,14 @@ impl ProtectedStore {
         value: &str,
     ) -> Result<(), String> {
         muse_proxy::Upstream::parse(value).map_err(|e| e.to_string())?;
+        self.save_protected(id, revision, value)
+    }
+    pub fn save_protected(
+        &self,
+        id: AccountId,
+        revision: Option<uuid::Uuid>,
+        value: &str,
+    ) -> Result<(), String> {
         let encrypted = protect(id, revision, value.as_bytes(), true)?;
         std::fs::create_dir_all(&self.root).map_err(|_| "无法创建代理凭据目录")?;
         let temporary = self
@@ -77,6 +85,15 @@ impl ProtectedStore {
         id: AccountId,
         revision: Option<uuid::Uuid>,
     ) -> Result<Zeroizing<String>, String> {
+        let value = self.load_protected(id, revision)?;
+        muse_proxy::Upstream::parse(&value).map_err(|e| e.to_string())?;
+        Ok(value)
+    }
+    pub fn load_protected(
+        &self,
+        id: AccountId,
+        revision: Option<uuid::Uuid>,
+    ) -> Result<Zeroizing<String>, String> {
         let path = self.path(id, revision);
         if std::fs::metadata(&path)
             .map_err(|_| "此账号的受保护代理配置不存在；未使用直连")?
@@ -91,7 +108,6 @@ impl ProtectedStore {
         }
         let plain = protect(id, revision, &bytes, false)?;
         let value = String::from_utf8(plain.to_vec()).map_err(|_| "代理凭据内容无效")?;
-        muse_proxy::Upstream::parse(&value).map_err(|e| e.to_string())?;
         Ok(Zeroizing::new(value))
     }
 }

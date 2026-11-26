@@ -19,25 +19,26 @@ pub(super) struct GroupDialog {
 }
 
 impl MuseWindow {
-    fn save_groups(
+    pub(super) fn save_groups(
         &mut self,
-        change: impl FnOnce(&mut AccountGroups) -> Result<(), String>,
+        change: impl FnOnce(&mut AccountGroups, &[muse_core::Account]) -> Result<bool, String>,
     ) -> Result<(), String> {
         if let Some(error) = &self.account_group_error {
             return Err(error.clone());
         }
         let mut groups = self.account_groups.clone();
-        change(&mut groups)?;
-        groups.save(&self.data_dir)?;
-        self.account_groups = groups;
+        if change(&mut groups, &self.workspace.accounts)? {
+            groups.save(&self.data_dir)?;
+            self.account_groups = groups;
+        }
         Ok(())
     }
 
     pub(super) fn toggle_account_group(&mut self, id: Option<Uuid>, cx: &mut Context<Self>) {
         self.clear_account_detail(cx);
-        if let Err(error) = self.save_groups(|groups| {
+        if let Err(error) = self.save_groups(|groups, _| {
             groups.toggle(id);
-            Ok(())
+            Ok(true)
         }) {
             self.status = error;
         }
@@ -98,17 +99,17 @@ impl MuseWindow {
         let result = match dialog.operation {
             GroupOperation::Name(id) => {
                 let name = dialog.input.as_ref().expect("name input").read(cx).text();
-                self.save_groups(|groups| groups.save_name(id, &name))
+                self.save_groups(|groups, _| groups.save_name(id, &name).map(|()| true))
             }
-            GroupOperation::Delete(id) => self.save_groups(|groups| {
+            GroupOperation::Delete(id) => self.save_groups(|groups, _| {
                 groups.remove_group(id);
-                Ok(())
+                Ok(true)
             }),
             GroupOperation::Move(account) => {
                 let destination = dialog.destination;
-                self.save_groups(|groups| {
-                    groups.move_account(account, destination);
-                    Ok(())
+                self.save_groups(|groups, accounts| {
+                    Ok(groups.membership(account) != destination
+                        && groups.place_account(accounts, account, destination, None))
                 })
             }
         };

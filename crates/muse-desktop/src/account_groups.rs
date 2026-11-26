@@ -1,4 +1,4 @@
-use muse_core::AccountId;
+use muse_core::{Account, AccountId};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path};
 use uuid::Uuid;
@@ -19,6 +19,7 @@ pub struct AccountGroups {
     pub groups: Vec<AccountGroup>,
     pub ungrouped_collapsed: bool,
     memberships: HashMap<AccountId, Uuid>,
+    account_order: Vec<AccountId>,
 }
 
 impl AccountGroups {
@@ -80,12 +81,76 @@ impl AccountGroups {
         Ok(())
     }
 
-    pub fn move_account(&mut self, account: AccountId, group: Option<Uuid>) {
-        if let Some(group) = group.filter(|id| self.group(*id).is_some()) {
+    pub fn ordered_accounts<'a>(&self, accounts: &'a [Account]) -> Vec<&'a Account> {
+        let ranks: HashMap<_, _> = self.account_order.iter().zip(0usize..).collect();
+        let mut ordered: Vec<_> = accounts.iter().collect();
+        ordered.sort_by_key(|account| ranks.get(&account.id).copied().unwrap_or(usize::MAX));
+        ordered
+    }
+
+    pub fn place_account(
+        &mut self,
+        accounts: &[Account],
+        account: AccountId,
+        group: Option<Uuid>,
+        neighbor: Option<(AccountId, bool)>,
+    ) -> bool {
+        if !accounts.iter().any(|item| item.id == account)
+            || group.is_some_and(|id| self.group(id).is_none())
+        {
+            return false;
+        }
+        let mut ordered: Vec<_> = self
+            .ordered_accounts(accounts)
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+        let mut destination: Vec<_> = ordered
+            .iter()
+            .copied()
+            .filter(|id| self.membership(*id) == group)
+            .collect();
+        let original = destination.iter().position(|id| *id == account);
+        destination.retain(|id| *id != account);
+        let index = match neighbor {
+            Some((id, after)) => match destination.iter().position(|item| *item == id) {
+                Some(index) => index + usize::from(after),
+                None => return false,
+            },
+            None => destination.len(),
+        };
+        if original == Some(index) {
+            return false;
+        }
+        ordered.retain(|id| *id != account);
+        let insertion = destination
+            .get(index)
+            .and_then(|next| ordered.iter().position(|id| id == next))
+            .unwrap_or(ordered.len());
+        ordered.insert(insertion, account);
+        self.account_order = ordered;
+        if let Some(group) = group {
             self.memberships.insert(account, group);
         } else {
             self.memberships.remove(&account);
         }
+        true
+    }
+
+    pub fn place_group(&mut self, id: Uuid, neighbor: Uuid, after: bool) -> bool {
+        let Some(from) = self.groups.iter().position(|group| group.id == id) else {
+            return false;
+        };
+        let Some(to) = self.groups.iter().position(|group| group.id == neighbor) else {
+            return false;
+        };
+        let insertion = to + usize::from(after) - usize::from(from < to);
+        if id == neighbor || from == insertion {
+            return false;
+        }
+        let group = self.groups.remove(from);
+        self.groups.insert(insertion, group);
+        true
     }
 
     pub fn remove_group(&mut self, id: Uuid) {
