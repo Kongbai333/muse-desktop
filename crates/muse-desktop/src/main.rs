@@ -34,6 +34,7 @@ mod site_avatar;
 mod studio;
 mod studio_image;
 mod studio_reference;
+mod subscriptions;
 mod system_transport;
 mod theme;
 mod transfer_cookies;
@@ -168,6 +169,19 @@ fn main() {
             let secret = secrets::ProtectedStore::new(&data_dir).load_selected(id, revision)?;
             let upstream =
                 muse_proxy::Upstream::parse(secret.as_str()).map_err(|e| e.to_string())?;
+            let upstream = if matches!(
+                account.network,
+                muse_core::AccountNetwork::SubscriptionNode { .. }
+            ) {
+                upstream.fixed_node()
+            } else {
+                upstream
+            };
+            if upstream.protocol() == muse_proxy::ProxyProtocol::Shadowsocks {
+                return Err(
+                    "Shadowsocks 需要实际目标流量验证，请在绑定账号中打开网页；未测试页面".into(),
+                );
+            }
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

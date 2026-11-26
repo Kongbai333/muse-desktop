@@ -322,6 +322,12 @@ pub fn export_payload(
             return Err("账号选择重复".into());
         }
         let account = workspace.account(*id).ok_or("账号已不存在")?;
+        if matches!(account.network, AccountNetwork::SubscriptionNode { .. }) {
+            return Err(
+                "v1 账号包无法表示订阅绑定；未导出。请取消勾选此账号，或主动修改其网络连接。"
+                    .into(),
+            );
+        }
         let proxy_ref = if account.network == AccountNetwork::Direct {
             None
         } else {

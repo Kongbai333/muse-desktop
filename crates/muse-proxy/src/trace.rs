@@ -53,6 +53,7 @@ tags!(Outcome {
 tags!(Source { Bridge => "bridge", WebView => "webview", PoolTest => "pool_draft_test", AccountTest => "account_draft_test", CliTest => "cli_saved_route_test" });
 tags!(Binding { Direct => "direct", Legacy => "legacy", Pool => "pool" });
 tags!(RoutePath {
+    ShadowsocksBridge => "shadowsocks_aead_bridge",
     SystemHttpBridge => "system_http_bridge", SystemHttpsBridge => "system_https_bridge", SystemSocks5Bridge => "system_socks5_bridge",
     NativeHttp => "native_http", NativeHttps => "native_https", NativeSocks5 => "native_socks5",
     Socks5AuthBridge => "socks5_auth_bridge", HttpAuthBridge => "http_auth_compatibility_bridge",

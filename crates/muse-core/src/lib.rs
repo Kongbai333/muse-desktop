@@ -251,6 +251,10 @@ pub enum AccountNetwork {
         proxy_id: Uuid,
         force_proxy: bool,
     },
+    SubscriptionNode {
+        node_id: Uuid,
+        force_proxy: bool,
+    },
 }
 
 impl AccountNetwork {
@@ -265,7 +269,9 @@ impl AccountNetwork {
     pub fn force_proxy(self) -> bool {
         match self {
             Self::Direct => false,
-            Self::HttpProxy { force_proxy } | Self::PoolProxy { force_proxy, .. } => force_proxy,
+            Self::HttpProxy { force_proxy }
+            | Self::PoolProxy { force_proxy, .. }
+            | Self::SubscriptionNode { force_proxy, .. } => force_proxy,
         }
     }
 
@@ -298,12 +304,31 @@ pub struct ProxyProfile {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubscriptionNode {
+    pub id: Uuid,
+    #[serde(skip)]
+    pub name: String,
+    pub protocol: String,
+    pub revision: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProxySubscription {
+    pub id: Uuid,
+    pub name: String,
+    pub revision: Uuid,
+    pub nodes: Vec<SubscriptionNode>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
     version: u32,
     pub accounts: Vec<Account>,
     active_account: Option<AccountId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proxy_profiles: Vec<ProxyProfile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscriptions: Vec<ProxySubscription>,
 }
 
 impl Default for Workspace {
@@ -319,6 +344,7 @@ impl Workspace {
             accounts: vec![],
             active_account: None,
             proxy_profiles: Vec::new(),
+            subscriptions: Vec::new(),
         }
     }
     pub fn active_account_id(&self) -> Option<AccountId> {
@@ -336,6 +362,15 @@ impl Workspace {
     }
 
     pub fn proxy_credentials(&self, account: &Account) -> Result<(Uuid, Option<Uuid>)> {
+        if let AccountNetwork::SubscriptionNode { node_id, .. } = account.network {
+            return self
+                .subscriptions
+                .iter()
+                .flat_map(|sub| &sub.nodes)
+                .find(|node| node.id == node_id)
+                .and_then(|node| node.revision.map(|revision| (node.id, Some(revision))))
+                .ok_or_else(|| "绑定的订阅节点不可用；未使用直连或其他节点".into());
+        }
         match account.network.proxy_id() {
             Some(id) => self
                 .proxy_profile(id)
@@ -760,6 +795,14 @@ impl Workspace {
                 || !matches!(profile.protocol.as_str(), "http" | "https" | "socks5")
             {
                 return Err("账号文件中的代理配置无效".into());
+            }
+        }
+        for sub in &workspace.subscriptions {
+            if !proxy_ids.insert(sub.id)
+                || sub.nodes.len() > 1000
+                || sub.nodes.iter().any(|node| !proxy_ids.insert(node.id))
+            {
+                return Err("订阅配置包含重复标识或节点过多".into());
             }
         }
         for account in &workspace.accounts {

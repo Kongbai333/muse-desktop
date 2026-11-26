@@ -146,7 +146,7 @@ impl MuseWindow {
     }
     pub(super) fn open_proxy_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.smoke.is_none() {
-            self.open_account_dialog(self.workspace.active_account_id(), false, window, cx);
+            self.open_proxy_pool(window, cx);
             return;
         }
         self.inspector_open = true;

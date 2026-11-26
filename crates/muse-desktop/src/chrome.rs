@@ -233,6 +233,7 @@ impl MuseWindow {
             Ok(imported) => match Workspace::load(&self.data_dir.join("workspace.json")) {
                 Ok(mut workspace) => {
                     let migration = crate::proxy_pool::migrate(&self.data_dir, &mut workspace);
+                    crate::subscriptions::hydrate(&self.data_dir, &mut workspace);
                     self.workspace = workspace;
                     self.status = if imported.already_present {
                         "旧版账号已存在，已为你选中".into()
@@ -848,9 +849,13 @@ impl MuseWindow {
             "settings-proxy-tab",
             "代理",
             self.inspector_section == InspectorSection::Proxy,
-            cx.listener(|this: &mut MuseWindow, _, _, cx| {
-                this.inspector_section = InspectorSection::Proxy;
-                cx.notify();
+            cx.listener(|this: &mut MuseWindow, _, window, cx| {
+                if this.smoke.is_some() {
+                    this.inspector_section = InspectorSection::Proxy;
+                    cx.notify();
+                } else {
+                    this.open_proxy_pool(window, cx);
+                }
             }),
         );
         div()
@@ -1411,7 +1416,7 @@ impl Render for MuseWindow {
                 "TransferDialog"
             } else if self.group_dialog.is_some() {
                 "GroupDialog"
-            } else if self.account_dialog.is_some() {
+            } else if self.account_dialog.is_some() && !self.proxy_drawer_visible() {
                 "Muse AccountDialog"
             } else if self.cookie_dialog.is_some() {
                 "Muse CookieDialog"
@@ -1597,9 +1602,10 @@ impl Render for MuseWindow {
             .when(self.account_context.is_some(), |element| {
                 element.child(self.render_account_context(window, cx))
             })
-            .when(self.account_dialog.is_some(), |element| {
-                element.child(self.render_account_dialog(window, cx))
-            })
+            .when(
+                self.account_dialog.is_some() && !self.proxy_drawer_visible(),
+                |element| element.child(self.render_account_dialog(window, cx)),
+            )
             .when(self.cookie_dialog.is_some(), |element| {
                 element.child(self.render_cookie_dialog(window, cx))
             })

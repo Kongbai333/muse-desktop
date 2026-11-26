@@ -31,6 +31,9 @@ impl Default for ProxyDraft {
 impl ProxyDraft {
     pub fn from_url(input: &str, force: bool) -> Result<Self, String> {
         let upstream = Upstream::parse(input).map_err(|error| error.to_string())?;
+        if upstream.protocol() == ProxyProtocol::Shadowsocks {
+            return Err("Shadowsocks 节点请通过订阅添加".into());
+        }
         let normalized = if input.contains("://") {
             Zeroizing::new(input.to_owned())
         } else {

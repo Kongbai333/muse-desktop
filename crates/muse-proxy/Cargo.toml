@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+shadowsocks = { version = "=1.23.2", default-features = false, features = ["aead-cipher"] }
 base64 = "0.22"
 bytes = "1"
 http-body-util = "0.1"

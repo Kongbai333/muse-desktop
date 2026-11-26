@@ -86,6 +86,9 @@ pub fn system_transport_status() -> Result<bool, ProxyError> {
     SYSTEM.get().copied().transpose().map(|c| c.is_some())
 }
 pub fn validate_system_upstream(upstream: &Upstream) -> Result<bool, ProxyError> {
+    if upstream.fixed_node {
+        return Ok(false);
+    }
     let system = SYSTEM.get().copied().transpose()?;
     if let Some(address) = system {
         if upstream.port == address.port()
@@ -113,8 +116,8 @@ pub fn validate_system_upstream(upstream: &Upstream) -> Result<bool, ProxyError>
 pub(super) fn identity() -> Option<Result<SocketAddr, ProxyError>> {
     SYSTEM.get().copied()
 }
-pub(super) fn trace_kind() -> trace::Transport {
-    if system_transport_enabled() {
+pub(super) fn trace_kind(upstream: &Upstream) -> trace::Transport {
+    if !upstream.fixed_node && system_transport_enabled() {
         trace::Transport::SystemLoopback
     } else {
         trace::Transport::DirectToAccountProxy
@@ -125,6 +128,7 @@ pub(super) fn route_path(protocol: ProxyProtocol) -> trace::RoutePath {
         ProxyProtocol::Http => trace::RoutePath::SystemHttpBridge,
         ProxyProtocol::Https => trace::RoutePath::SystemHttpsBridge,
         ProxyProtocol::Socks5 => trace::RoutePath::SystemSocks5Bridge,
+        ProxyProtocol::Shadowsocks => trace::RoutePath::ShadowsocksBridge,
     }
 }
 pub(super) fn timeout_error(pending: TraceStage) -> ProxyError {
@@ -148,8 +152,12 @@ pub(super) async fn dial(
     mut context: TraceContext,
     pending: &mut TraceStage,
 ) -> Result<UpstreamStream, ProxyError> {
-    context.transport = Some(trace_kind());
-    let system = SYSTEM.get().copied().transpose()?;
+    context.transport = Some(trace_kind(upstream));
+    let system = if upstream.fixed_node {
+        None
+    } else {
+        SYSTEM.get().copied().transpose()?
+    };
     let Some(system) = system else {
         *pending = TraceStage::ProviderTcp;
         let span = TraceSpan::new(context, *pending);
