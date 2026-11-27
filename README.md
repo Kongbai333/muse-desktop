@@ -27,7 +27,7 @@ Windows 版自带经过修改的 Mihomo 原生订阅内核，不提供系统 TUN
 需要 Windows 10/11 x64 和 Microsoft Edge WebView2 Evergreen Runtime，不需要安装 .NET。
 
 默认数据目录为 `%LOCALAPPDATA%\MuseDesktopNext`。已有用户可用
-`Muse.exe --data-dir "原数据目录"` 沿用账号和历史；升级时不要删除该目录。
+`Muse.exe --data-dir "原数据目录的绝对路径"` 沿用账号和历史；原用相对路径的，请按旧启动工作目录确定其绝对路径。保留原快捷方式的其他自选启动参数，升级时不要删除数据目录。
 安装包不包含开发者的账号、Cookie、代理凭据或聊天数据。
 
 如需先通过 Windows 系统代理连接账号已绑定的代理，在解压目录用 PowerShell 运行：

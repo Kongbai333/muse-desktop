@@ -9,6 +9,9 @@ use std::{
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Serialize, Deserialize)]
 struct PrivateData {
     url: String,
@@ -129,6 +132,53 @@ fn encoded(mut node: Value) -> Zeroizing<String> {
     Zeroizing::new(format!("{}{node}", mihomo::NATIVE))
 }
 
+#[derive(Default)]
+struct LegacyMatches {
+    keys: HashMap<String, Uuid>,
+    ambiguous: HashSet<Uuid>,
+    seen: HashSet<Uuid>,
+}
+
+impl LegacyMatches {
+    fn record(&mut self, key: String, id: Uuid) {
+        if let Some(other) = self.keys.insert(key, id) {
+            self.ambiguous.extend([other, id]);
+        }
+    }
+
+    fn add(&mut self, stored: &str, config: Value, id: Uuid) {
+        let default = if stored.starts_with("ss://") {
+            Some("udp")
+        } else if stored.starts_with("http://") {
+            Some("tls")
+        } else {
+            None
+        };
+        if let Some(field) = default.filter(|field| config.get(*field).is_none()) {
+            let mut explicit = config.clone();
+            explicit[field] = Value::Bool(false);
+            self.record(encoded(explicit).to_string(), id);
+        }
+        self.record(encoded(config).to_string(), id);
+    }
+
+    fn conflicts_with_native(&mut self, key: &str) -> bool {
+        if let Some(id) = self.keys.get(key) {
+            self.ambiguous.insert(*id);
+            return true;
+        }
+        false
+    }
+
+    fn candidate(&mut self, key: &str) -> Option<Uuid> {
+        let id = *self.keys.get(key)?;
+        if !self.seen.insert(id) {
+            self.ambiguous.insert(id);
+        }
+        Some(id)
+    }
+}
+
 pub fn replace(
     root: &Path,
     workspace: &mut Workspace,
@@ -157,42 +207,48 @@ pub fn replace(
         return Err("最多保存 64 个订阅".into());
     }
     let store = ProtectedStore::new(root);
-    let mut old_groups: HashMap<String, Vec<(Uuid, Uuid, String, bool)>> = HashMap::new();
+    let mut old_groups: HashMap<String, Vec<(Uuid, Uuid, String)>> = HashMap::new();
+    let mut legacy = LegacyMatches::default();
     let mut retired = Vec::new();
     if let Some(old) = old {
-        let mut labels = private(root, old)?.labels;
+        let saved = private(root, old)?;
+        if saved.url != url {
+            return Err("订阅来源已改变；请作为新订阅添加".into());
+        }
+        let mut labels = saved.labels;
         retired.push((old.id, old.revision));
         for node in &old.nodes {
             if let Some(rev) = node.revision {
                 let stored = store.load_selected(node.id, Some(rev))?;
                 retired.push((node.id, rev));
                 if let Ok(config) = mihomo::snapshot(&stored) {
+                    if !stored.starts_with(mihomo::NATIVE) {
+                        legacy.add(&stored, config, node.id);
+                        continue;
+                    }
                     old_groups
                         .entry(encoded(config).to_string())
                         .or_default()
-                        .push((
-                            node.id,
-                            rev,
-                            labels.remove(&node.id).unwrap_or_default(),
-                            stored.starts_with(mihomo::NATIVE),
-                        ));
+                        .push((node.id, rev, labels.remove(&node.id).unwrap_or_default()));
                 }
             }
         }
     }
+    old_groups.retain(|key, _| !legacy.conflicts_with_native(key));
     let mut counts = HashMap::new();
     let mut label_counts = HashMap::new();
     let entries: Vec<_> = entries
         .into_iter()
         .map(|entry| {
             let value = entry.node.map(encoded);
+            let legacy_id = value.as_ref().and_then(|key| legacy.candidate(key));
             if let Some(value) = &value {
                 *counts.entry(value.to_string()).or_insert(0usize) += 1;
                 *label_counts
                     .entry((value.to_string(), entry.label.clone()))
                     .or_insert(0usize) += 1;
             }
-            (entry.label, entry.kind, value, entry.reason)
+            (entry.label, entry.kind, value, entry.reason, legacy_id)
         })
         .collect();
     let mut sub = ProxySubscription {
@@ -215,7 +271,7 @@ pub fn replace(
         .map(|node| node.id)
         .collect();
     let result = (|| {
-        for (label, kind, value, restriction) in entries {
+        for (label, kind, value, restriction, legacy_id) in entries {
             let mut id = Uuid::new_v4();
             let mut revision = None;
             let reason = restriction.map(|category| category.message().to_owned());
@@ -234,12 +290,12 @@ pub fn replace(
                     let first = matched.next()?;
                     matched.next().is_none().then_some(first)
                 });
-                if let Some((old_id, old_rev, _, native)) = previous {
+                if let Some((old_id, old_rev, _)) = previous {
                     id = *old_id;
-                    if *native {
-                        revision = Some(*old_rev);
-                        kept.insert((id, *old_rev));
-                    }
+                    revision = Some(*old_rev);
+                    kept.insert((id, *old_rev));
+                } else if let Some(old_id) = legacy_id.filter(|id| !legacy.ambiguous.contains(id)) {
+                    id = old_id;
                 }
                 if revision.is_none() {
                     let rev = Uuid::new_v4();

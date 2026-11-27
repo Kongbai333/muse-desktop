@@ -44,7 +44,8 @@ existing data directory. Do not delete your data directory when upgrading.
 
 从 v0.1.10 升级：旧版应用内更新不能安装此完整包。退出旧版，将整个 ZIP
 解压到新的程序目录，再运行 Muse.exe。不要只复制 Muse.exe，也不要移动或删除
-原数据目录；若原来指定了 --data-dir，继续使用同一参数。备份原数据后操作。
+原数据目录；若原来指定了 --data-dir，传入原资料目录的绝对路径，保留原有的
+其他自选启动参数。备份原数据后操作。
 
 Bundled modified Mihomo is for account routing. No Windows system TUN driver
 is included or supported. See kernel/README.md for sources and rebuilding.
