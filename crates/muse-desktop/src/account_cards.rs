@@ -320,7 +320,7 @@ impl MuseWindow {
             })
             .when(active, |element| {
                 element
-                    .bg(rgb(tone(0xDFE8F8, 0x313F56)))
+                    .bg(rgb(colors().selected))
                     .hover(|style| style.bg(rgb(tone(0xD8E3F5, 0x384862))))
             })
             .when(self.account_keyboard_focus == Some(id), |element| {
@@ -406,8 +406,7 @@ fn sidebar_nav(
     trailing: Option<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
-    div()
-        .id(id)
+    super::chrome::keyboard_control(div().id(id))
         .h(px(36.))
         .px_3()
         .flex_none()
@@ -983,8 +982,9 @@ impl MuseWindow {
                     .gap_2()
                     .child(
                         div()
-                            .text_size(px(12.))
-                            .text_color(rgb(colors().muted))
+                            .text_size(px(crate::theme::SECTION))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(colors().text))
                             .child("账号"),
                     )
                     .child(
@@ -1028,7 +1028,15 @@ impl MuseWindow {
                         "sidebar-proxy-pool",
                         "shield-check",
                         "代理池",
-                        Some(self.workspace.proxy_profiles.len().to_string()),
+                        Some(format!(
+                            "{} 节点 · {} 手动",
+                            self.workspace
+                                .subscriptions
+                                .iter()
+                                .map(|sub| sub.nodes.len())
+                                .sum::<usize>(),
+                            self.workspace.proxy_profiles.len()
+                        )),
                         cx.listener(|this, _, window, cx| this.open_proxy_pool(window, cx)),
                     ))
                     .child(sidebar_nav(

@@ -22,10 +22,12 @@
 ## 下载与运行
 
 在本仓库的 **Releases** 页面下载 `Muse-Desktop-<版本>-win-x64.zip`，解压后运行 `Muse.exe`。
+从 v0.1.10 升级须手动安装：退出旧版，备份数据，将整个 ZIP 解压到新的程序目录，运行新目录的 `Muse.exe`。不要只替换 EXE；不要删除或移动原数据目录。v0.1.10 的应用内更新不支持此包。
+Windows 版自带经过修改的 Mihomo 原生订阅内核，不提供系统 TUN、不安装或下载 Wintun。账号浏览器使用各自绑定的代理。内核来源、许可证和离线重建方法见 [kernel/README.md](kernel/README.md)。
 需要 Windows 10/11 x64 和 Microsoft Edge WebView2 Evergreen Runtime，不需要安装 .NET。
 
 默认数据目录为 `%LOCALAPPDATA%\MuseDesktopNext`。已有用户可用
-`Muse.exe --data-dir "原数据目录"` 沿用账号和历史；升级时不要删除该目录。
+`Muse.exe --data-dir "原数据目录的绝对路径"` 沿用账号和历史；原用相对路径的，请按旧启动工作目录确定其绝对路径。保留原快捷方式的其他自选启动参数，升级时不要删除数据目录。
 安装包不包含开发者的账号、Cookie、代理凭据或聊天数据。
 
 如需先通过 Windows 系统代理连接账号已绑定的代理，在解压目录用 PowerShell 运行：
@@ -48,17 +50,9 @@
 
 在「编辑账号 → 网络连接」选择系统网络、手动代理，或「订阅名 / 节点名」。手动代理和订阅节点都是最终出口，不串联。不同名称不代表不同公网 IP。换绑只重建该账号的浏览器，保留登录资料；同账号标签、登录跳转、页面资源、额度同步和创作请求沿用该路由。「高级设置 → 本机地址也经过此代理」只控制回环目标旁路，不改变公网路由。`--proxy-via-system` 是手动代理的既有兼容启动方式，不作用于订阅节点。
 
-订阅支持 UTF-8 Clash YAML 的 `proxies`，以及逐行分享链接（明文、标准或 URL-safe Base64）。单份最多 1 MiB、1000 个节点。升级后在管理窗口**刷新原订阅**即可，不必重新添加。
+订阅由随包内核读取。支持 Clash YAML 的 `proxies`（含等价 JSON）和内核可完整转换的逐行分享链接或标准 Base64 列表。单份最多 1 MiB、1000 个节点。可添加多个来源、按来源刷新，并将选定节点加入代理池。升级后可先刷新原订阅，不必重新添加。
 
-| 订阅节点 | 可用传输与认证 |
-| --- | --- |
-| HTTP / HTTPS / SOCKS5 | 保留原有 TCP 代理及认证；Clash HTTP 可用 `tls: true` 选择 HTTPS。 |
-| Shadowsocks | TCP AEAD：`aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`。不支持插件和 AEAD-2022。 |
-| VLESS | TCP/TLS 或 WebSocket/TLS；UUID、无 flow、`encryption=none`（外层 TLS 必需）。 |
-| VMess | TCP/TLS 或 WebSocket/TLS；UUID、AEAD、`alterId=0`，`aes-128-gcm` 或 `chacha20-poly1305`；`auto` 选 AES-128-GCM。 |
-| Trojan | TCP/TLS 或 WebSocket/TLS；非空密码。未指定安全层时按 Trojan 标准使用 TLS。 |
-
-三个新增协议均支持 Clash；分享列表使用 `vless://`、`trojan://` 或 `vmess://` 后接 Base64 编码的 v2 JSON。TCP 和 WS 都校验证书链及服务器名称；可指定 SNI，WS 可单独指定 Host 和路径。仅承载浏览器的 TCP 流，不提供 UDP/TUN。gRPC、REALITY、Vision/flow、WS early data、TLS 指纹、跳过证书校验、定制 ALPN、旧 VMess 认证或其他未支持的选项不能绑定，不会按普通 TCP 或明文试连。新协议需支持代理认证范围校验的 WebView2 Evergreen 运行时（至少 122.0.2365.46）；创建或握手失败只阻止该账号。
+每个节点经原生解析，再检查是否符合固定账号路由和证书策略。“可绑定”不代表节点已连通。指定其他出口、读取本地资源或含未识别的有效参数时，不会把节点当作普通 TCP 或改用直连。订阅不能关闭证书验证。现有手动代理仍独立工作。建议使用 Microsoft Edge WebView2 Evergreen 122.0.2365.46 或更高版本。
 
 刷新时按协议、端点、认证和传输配置匹配，不按名称或列表位置匹配。下载或解析失败保留上一批；原节点消失、更换身份或删除订阅时，已有绑定显示不可用，不会切换出口。须在账号设置重新选择。订阅 URL、提供方的节点名称、UUID、密码和节点配置由 Windows DPAPI 保护；普通配置只记录订阅名、随机标识和协议。冻结 v1 迁移包仍支持原有系统/静态代理账号，但无法表示订阅绑定：选中此类账号会停止导出，不会将其改为系统网络。
 

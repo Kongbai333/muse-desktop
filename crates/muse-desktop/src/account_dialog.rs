@@ -1,4 +1,4 @@
-use super::chrome::{glyph, icon_button};
+use super::chrome::{glyph, icon_button, keyboard_control};
 use super::*;
 use crate::{
     proxy_pool::{self, RouteChoice},
@@ -10,6 +10,8 @@ use zeroize::Zeroizing;
 
 #[path = "cookie_smoke.rs"]
 pub(super) mod cookie_smoke;
+#[path = "pool_view.rs"]
+mod pool_view;
 #[path = "proxy_batch_dialog.rs"]
 mod proxy_batch_dialog;
 use proxy_batch_dialog::BatchImport;
@@ -19,13 +21,29 @@ struct ConnectionResult {
     result: Result<(), String>,
 }
 
+pub(super) enum SourceFeedback {
+    Reading(Uuid),
+    Updated,
+    Changed,
+    Failed(String),
+}
+
 pub(super) struct PoolWindow {
     host: WeakEntity<MuseWindow>,
     focus: FocusHandle,
+    frame: Option<crate::windows_caption::CaptionBridge>,
+    border: Option<u32>,
 }
 
 impl Render for PoolWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let border = modal_border();
+        if self.border != Some(border) {
+            if let Some(frame) = &self.frame {
+                frame.set_pool_border(border);
+            }
+            self.border = Some(border);
+        }
         let panel = self
             .host
             .update(cx, |host, cx| {
@@ -41,9 +59,22 @@ impl Render for PoolWindow {
         div()
             .relative()
             .size_full()
+            .font_family("Segoe UI Variable")
+            .text_size(px(13.))
             .bg(rgb(colors().panel))
+            .text_color(rgb(colors().text))
             .track_focus(&self.focus)
             .key_context("AccountDialog")
+            .on_key_down(move |event, window, cx| {
+                if event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev()
+                    } else {
+                        window.focus_next()
+                    }
+                    cx.stop_propagation();
+                }
+            })
             .on_action(move |_: &CancelAccountDialog, window, cx| {
                 let _ = host.update(cx, |host, cx| host.close_account_dialog(window, cx));
             })
@@ -64,10 +95,21 @@ enum PoolScreen {
     Remove(Uuid),
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum PoolTab {
+    #[default]
+    Subscriptions,
+    Manual,
+}
+
 pub(super) struct AccountDialog {
     pub owner: Option<AccountId>,
     pub removing: bool,
     screen: Option<PoolScreen>,
+    tab: PoolTab,
+    parked: Option<Box<AccountDialog>>,
+    source: Option<Uuid>,
+    sources_open: bool,
     batch: Option<BatchImport>,
     route: RouteChoice,
     picking: bool,
@@ -83,7 +125,6 @@ pub(super) struct AccountDialog {
     advanced: bool,
     language: Entity<TextInput>,
     timezone: Entity<TextInput>,
-    reveal: bool,
     message: String,
     /// Shown as the name placeholder and used when the name is left empty.
     default_name: String,
@@ -153,6 +194,10 @@ impl AccountDialog {
             owner,
             removing,
             screen: None,
+            tab: PoolTab::default(),
+            parked: None,
+            source: None,
+            sources_open: false,
             batch: None,
             route: RouteChoice::System,
             picking: false,
@@ -168,7 +213,6 @@ impl AccountDialog {
             advanced: false,
             language,
             timezone,
-            reveal: false,
             message: String::new(),
             default_name: String::new(),
             test_ok: None,
@@ -186,6 +230,13 @@ impl AccountDialog {
         self.name
             .update(cx, |input, _| input.set_placeholder(&value));
         self.default_name = value;
+    }
+    fn reading_form(&mut self, ticket: Uuid) -> Option<&mut Self> {
+        if self.refresh == Some(ticket) {
+            Some(self)
+        } else {
+            self.parked.as_deref_mut()?.reading_form(ticket)
+        }
     }
     /// The typed name, or the suggested default when the box is left empty.
     fn name_or_default(&self, cx: &App) -> String {
@@ -230,6 +281,45 @@ impl AccountDialog {
 }
 
 impl MuseWindow {
+    pub(super) fn tab_account_field(
+        &self,
+        backwards: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dialog) = &self.account_dialog else {
+            return;
+        };
+        let fields = match dialog.screen {
+            Some(PoolScreen::AddSubscription) => vec![&dialog.name, &dialog.secret],
+            Some(PoolScreen::Edit(_)) => vec![
+                &dialog.name,
+                &dialog.host,
+                &dialog.port,
+                &dialog.user,
+                &dialog.secret,
+            ],
+            None if !dialog.removing => {
+                let mut fields = vec![&dialog.name];
+                if dialog.owner.is_none() {
+                    fields.push(&dialog.cookie);
+                }
+                fields.extend([&dialog.language, &dialog.timezone]);
+                fields
+            }
+            _ => return,
+        };
+        let count = fields.len();
+        let next = fields
+            .iter()
+            .position(|field| field.read(cx).is_focused(window))
+            .map_or(0, |index| {
+                (index + if backwards { count - 1 } else { 1 }) % count
+            });
+        window.focus(&fields[next].read(cx).focus_handle(cx));
+        cx.stop_propagation();
+    }
+
     pub(super) fn poll_cookie_logins(&mut self) -> bool {
         use crate::cookie_import::{LoginOutcome, login_outcome};
         let finished = self
@@ -508,7 +598,7 @@ impl MuseWindow {
         let removing = dialog.removing;
         let name = dialog.name_or_default(cx);
         if let Some(screen) = dialog.screen {
-            self.save_pool_screen(screen, &name, window, cx);
+            self.save_pool_screen(self.pool_content(dialog, screen), &name, window, cx);
             return;
         }
         let (route, force) = (dialog.route, dialog.force);
@@ -677,8 +767,13 @@ impl MuseWindow {
         Ok(())
     }
     pub(super) fn poll_account_dialog(&mut self, cx: &mut Context<Self>) -> bool {
+        let manual_empty = self.workspace.proxy_profiles.is_empty();
         let Some(dialog) = self.account_dialog.as_mut().filter(|dialog| {
-            !dialog.transition.is_exiting() && matches!(dialog.screen, Some(PoolScreen::Edit(_)))
+            !dialog.transition.is_exiting()
+                && (matches!(dialog.screen, Some(PoolScreen::Edit(_)))
+                    || (manual_empty
+                        && dialog.screen == Some(PoolScreen::List)
+                        && dialog.tab == PoolTab::Manual))
         }) else {
             return false;
         };
@@ -686,12 +781,13 @@ impl MuseWindow {
         let current = dialog.proxy(cx);
         if current != dialog.last_draft {
             dialog.last_draft = current;
-            dialog.message = "未保存的修改".into();
+            dialog.message.clear();
             dialog.test_ok = None;
             changed = true;
         }
         while let Ok(result) = dialog.receiver.try_recv() {
             dialog.pending = false;
+            changed = true;
             if dialog.proxy(cx) == result.draft {
                 dialog.test_ok = Some(result.result.is_ok());
                 dialog.message = match result.result {
@@ -825,15 +921,31 @@ impl MuseWindow {
         }
         self.show_proxy_pool_screen(PoolScreen::List, window, cx);
         let host = cx.entity().downgrade();
-        let bounds = Bounds::centered(None, size(px(840.), px(660.)), cx);
+        let focus = cx.focus_handle();
+        self.pool_focus = Some(focus.clone());
+        let display = window.display(cx).map(|display| display.id());
+        let work = crate::windows_caption::work_area(window)
+            .unwrap_or_else(|| Bounds::centered(display, size(px(1112.), px(792.)), cx));
+        let bounds = Bounds::centered_at(
+            work.center(),
+            size(
+                (work.size.width - px(32.)).clamp(px(1.), px(1080.)),
+                (work.size.height - px(32.)).clamp(px(1.), px(760.)),
+            ),
+        );
         cx.defer(move |cx| {
             let owner = host.clone();
             let opened = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(580.), px(420.))),
+                    display_id: display,
+                    window_min_size: Some(size(
+                        bounds.size.width.min(px(420.)),
+                        bounds.size.height.min(px(360.)),
+                    )),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Muse · 代理管理".into()),
+                        appears_transparent: true,
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -852,9 +964,15 @@ impl MuseWindow {
                             })
                             .detach();
                         }
-                        let focus = cx.focus_handle();
                         window.focus(&focus);
-                        PoolWindow { host, focus }
+                        let frame =
+                            crate::windows_caption::CaptionBridge::install_pool(window).ok();
+                        PoolWindow {
+                            host,
+                            focus,
+                            frame,
+                            border: None,
+                        }
                     })
                 },
             );
@@ -874,6 +992,7 @@ impl MuseWindow {
 
     fn finish_pool_window(&mut self, cx: &mut Context<Self>) {
         self.pool_window = None;
+        self.pool_focus = None;
         self.account_dialog = self.account_dialog_return.take();
         cx.notify();
     }
@@ -882,7 +1001,17 @@ impl MuseWindow {
         let Some(dialog) = self.account_dialog.as_mut() else {
             return;
         };
-        if dialog.refresh.is_some() {
+        let Some(window) = self.pool_window else {
+            return;
+        };
+        if dialog.refresh.is_some()
+            || existing.is_some_and(|id| {
+                matches!(
+                    self.pool_feedback.get(&id),
+                    Some(SourceFeedback::Reading(_))
+                )
+            })
+        {
             return;
         }
         let (name, url) = if let Some(id) = existing {
@@ -892,7 +1021,7 @@ impl MuseWindow {
             match crate::subscriptions::source(&self.data_dir, sub) {
                 Ok(source) => (sub.name.clone(), source),
                 Err(error) => {
-                    dialog.message = error;
+                    self.pool_feedback.insert(id, SourceFeedback::Failed(error));
                     cx.notify();
                     return;
                 }
@@ -908,12 +1037,19 @@ impl MuseWindow {
             cx.notify();
             return;
         }
-        let nonce = Uuid::new_v4();
-        dialog.refresh = Some(nonce);
-        dialog.message = "正在获取订阅…".into();
-        let Some(window) = self.pool_window else {
+        if existing.is_none() && url.is_empty() {
+            dialog.message = "请填写订阅地址".into();
+            cx.notify();
             return;
-        };
+        }
+        let nonce = Uuid::new_v4();
+        if let Some(id) = existing {
+            self.pool_feedback
+                .insert(id, SourceFeedback::Reading(nonce));
+        } else {
+            dialog.refresh = Some(nonce);
+            dialog.message.clear();
+        }
         cx.spawn(async move |host, cx| {
             let (url, result) = cx
                 .background_executor()
@@ -922,16 +1058,12 @@ impl MuseWindow {
                     (url, result)
                 })
                 .await;
-            let _ = window.update(cx, |_, window, cx| {
-                let _ = host.update(cx, |host, cx| {
-                    let Some(dialog) = host
-                        .account_dialog
-                        .as_mut()
-                        .filter(|dialog| dialog.refresh == Some(nonce))
-                    else {
-                        return;
-                    };
-                    dialog.refresh = None;
+            let added = host.update(cx, |host, cx| {
+                    if let Some(id) = existing {
+                        if !matches!(host.pool_feedback.get(&id), Some(SourceFeedback::Reading(ticket)) if *ticket == nonce) { return None; }
+                    } else {
+                        host.account_dialog.as_mut()?.reading_form(nonce)?;
+                    }
                     let result = result.and_then(|entries| {
                         crate::subscriptions::replace(
                             &host.data_dir,
@@ -944,57 +1076,229 @@ impl MuseWindow {
                     });
                     match result {
                         Ok(affected) => {
+                            let affected_count = affected.len();
                             for id in affected {
                                 host.browsers.invalidate_account(id);
-                                host.fail_studio_job(id, "绑定的订阅节点已不可用", cx);
+                                host.fail_studio_job(id, "绑定的节点已变更，请检查账号出口", cx);
                             }
-                            host.show_proxy_pool_screen(PoolScreen::List, window, cx);
-                            if let Some(dialog) = &mut host.account_dialog {
-                                dialog.message = "订阅已更新".into();
-                                dialog.test_ok = Some(true);
+                            if let Some(id) = existing.or_else(|| host.workspace.subscriptions.last().map(|sub| sub.id)) {
+                                host.pool_feedback.insert(id, if affected_count == 0 { SourceFeedback::Updated } else { SourceFeedback::Changed });
+                            }
+                            cx.notify();
+                            if existing.is_none() {
+                                let id = host.workspace.subscriptions.last()?.id;
+                                let dialog = host.account_dialog.as_mut()?.reading_form(nonce)?;
+                                dialog.refresh = None;
+                                dialog.source = Some(id);
+                                dialog.name.update(cx, |input, cx| input.set_text("", cx));
+                                dialog.secret.update(cx, |input, cx| input.set_text("", cx));
+                                if dialog.screen == Some(PoolScreen::AddSubscription) { return Some(id); }
                             }
                         }
                         Err(error) => {
-                            dialog.message = error;
-                            dialog.test_ok = Some(false);
+                            if let Some(id) = existing {
+                                host.pool_feedback.insert(id, SourceFeedback::Failed(error));
+                            } else if let Some(dialog) = host.account_dialog.as_mut().and_then(|dialog| dialog.reading_form(nonce)) {
+                                dialog.refresh = None;
+                                dialog.message = error;
+                                dialog.test_ok = Some(false);
+                            }
                         }
                     }
                     cx.notify();
-                });
-            });
+                    None
+            }).ok().flatten();
+            if let Some(id) = added {
+                let _ = window.update(cx, |_, window, cx| { let _ = host.update(cx, |host, cx| {
+                    host.show_proxy_pool_screen(PoolScreen::List, window, cx);
+                    if let Some(dialog) = &mut host.account_dialog { dialog.source = Some(id); }
+                }); });
+            }
         })
         .detach();
         cx.notify();
     }
 
-    fn render_subscriptions(&self, cx: &Context<Self>) -> Div {
-        div()
+    fn render_subscriptions(
+        &self,
+        dialog: &AccountDialog,
+        narrow: bool,
+        cx: &Context<Self>,
+    ) -> Div {
+        let mut sources: Vec<_> = self.workspace.subscriptions.iter().collect();
+        sources.sort_by(|left, right| (&left.name, left.id).cmp(&(&right.name, right.id)));
+        let selected = sources
+            .iter()
+            .copied()
+            .find(|sub| Some(sub.id) == dialog.source)
+            .or_else(|| sources.first().copied());
+        let nav = div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(field_label("订阅与固定节点"))
-            .children(self.workspace.subscriptions.iter().map(|sub| {
-                let id = sub.id;
+            .min_h_0()
+            .flex_none()
+            .when(!narrow, |el| {
+                el.w(px(196.))
+                    .pr_3()
+                    .border_r_1()
+                    .border_color(rgb(colors().line))
+            })
+            .child(
                 div()
                     .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(if narrow && selected.is_some() {
+                        keyboard_control(div().id("source-selector"))
+                            .flex_1()
+                            .min_w_0()
+                            .px_2()
+                            .h(px(34.))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .rounded_md()
+                            .bg(rgb(colors().fill))
+                            .cursor_pointer()
+                            .child(
+                                div().flex_1().truncate().child(
+                                    selected.map(|sub| sub.name.clone()).unwrap_or_default(),
+                                ),
+                            )
+                            .child(glyph("chevron-down", 14., colors().secondary))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(dialog) = &mut this.account_dialog {
+                                    dialog.sources_open = !dialog.sources_open;
+                                }
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    } else {
+                        section_title("订阅来源").flex_1().into_any_element()
+                    })
+                    .child(icon_button(
+                        "pool-add-sub",
+                        "plus",
+                        "添加订阅",
+                        true,
+                        false,
+                        cx.listener(|this, _, window, cx| {
+                            this.show_proxy_pool_screen(PoolScreen::AddSubscription, window, cx)
+                        }),
+                    )),
+            )
+            .when(!narrow || dialog.sources_open, |el| {
+                el.child(
+                    div()
+                        .id("pool-sources")
+                        .min_h_0()
+                        .when(narrow, |list| list.max_h(px(86.)))
+                        .overflow_y_scroll()
+                        .children(sources.iter().map(|sub| {
+                            let id = sub.id;
+                            let active = selected.is_some_and(|sub| sub.id == id);
+                            keyboard_control(div().id(id))
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .px_2()
+                                .h(px(34.))
+                                .rounded_md()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(rgb(colors().fill_hover)))
+                                .when(active, |el| {
+                                    el.bg(rgb(colors().selected))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                })
+                                .child(glyph(
+                                    "shield-check",
+                                    15.,
+                                    if active {
+                                        colors().blue
+                                    } else {
+                                        colors().secondary
+                                    },
+                                ))
+                                .child(div().flex_1().min_w_0().truncate().child(sub.name.clone()))
+                                .tooltip({
+                                    let name = sub.name.clone();
+                                    move |_, cx| {
+                                        cx.new(|_| super::chrome::AccountHint(name.clone())).into()
+                                    }
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(dialog) = &mut this.account_dialog {
+                                        dialog.source = Some(id);
+                                        dialog.sources_open = false;
+                                        dialog.message.clear();
+                                    }
+                                    cx.notify();
+                                }))
+                        })),
+                )
+            });
+        div()
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .gap_3()
+            .when(narrow, |el| el.flex_col())
+            .child(nav)
+            .children(selected.map(|sub| {
+                let id = sub.id;
+                let feedback = self.pool_feedback.get(&id);
+                let reading = matches!(feedback, Some(SourceFeedback::Reading(_)));
+                let ready = sub.nodes.iter().filter(|node| node.selectable()).count();
+                div()
+                    .id(ElementId::Name(id.to_string().into()))
+                    .flex()
                     .flex_col()
-                    .gap_1()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
                     .child(
                         div()
+                            .flex_none()
+                            .px_2()
+                            .py_1()
+                            .bg(rgb(colors().surface))
                             .flex()
                             .gap_2()
                             .items_center()
                             .child(
                                 div()
+                                    .id("selected-source-name")
                                     .flex_1()
+                                    .min_w_0()
+                                    .truncate()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(format!("{} · {} 个节点", sub.name, sub.nodes.len())),
+                                    .child(sub.name.clone())
+                                    .tooltip({
+                                        let name = sub.name.clone();
+                                        move |_, cx| {
+                                            cx.new(|_| super::chrome::AccountHint(name.clone()))
+                                                .into()
+                                        }
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(12.))
+                                    .text_color(rgb(colors().secondary))
+                                    .child(format!("已加入 {ready} / {}", sub.nodes.len())),
                             )
                             .child(icon_button(
                                 "refresh-sub",
                                 "reload",
-                                "手动刷新订阅",
-                                true,
+                                if reading {
+                                    "正在读取订阅"
+                                } else {
+                                    "刷新订阅"
+                                },
+                                !reading,
                                 false,
                                 cx.listener(move |this, _, _, cx| {
                                     this.refresh_subscription(Some(id), cx)
@@ -1004,7 +1308,7 @@ impl MuseWindow {
                                 "delete-sub",
                                 "trash",
                                 "删除订阅",
-                                true,
+                                !reading,
                                 false,
                                 cx.listener(move |this, _, window, cx| {
                                     this.show_proxy_pool_screen(
@@ -1015,23 +1319,207 @@ impl MuseWindow {
                                 }),
                             )),
                     )
-                    .children(sub.nodes.iter().map(|node| {
+                    .when_some(feedback, |el, state| {
+                        let (text, color, icon) = match state {
+                            SourceFeedback::Reading(_) => {
+                                ("正在读取订阅…".into(), colors().secondary, "reload")
+                            }
+                            SourceFeedback::Updated => {
+                                ("节点配置已更新".into(), colors().secondary, "circle-check")
+                            }
+                            SourceFeedback::Changed => (
+                                "节点配置已更新，请检查受影响账号的绑定".into(),
+                                colors().attention,
+                                "help-circle",
+                            ),
+                            SourceFeedback::Failed(reason) => {
+                                (reason.clone(), colors().danger, "help-circle")
+                            }
+                        };
+                        el.child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(glyph(icon, 14., color).flex_none())
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .text_size(px(crate::theme::CAPTION))
+                                        .text_color(rgb(color))
+                                        .child(div().w_full().child(text))
+                                        .when(matches!(state, SourceFeedback::Failed(_)), |el| {
+                                            el.child(
+                                                div()
+                                                    .w_full()
+                                                    .text_color(rgb(colors().secondary))
+                                                    .child("已保留原节点和账号绑定，可重新刷新。"),
+                                            )
+                                        }),
+                                ),
+                        )
+                    })
+                    .child(
                         div()
-                            .px_3()
-                            .py_1()
-                            .text_size(px(12.))
+                            .flex_none()
+                            .px_2()
+                            .pt_2()
+                            .pb_1()
+                            .flex()
+                            .gap_2()
+                            .text_size(px(crate::theme::CAPTION))
                             .text_color(rgb(colors().secondary))
-                            .child(format!(
-                                "{} · {} · {}",
-                                node.name,
-                                node.protocol.to_ascii_uppercase(),
-                                if node.revision.is_some() {
-                                    "可绑定"
-                                } else {
-                                    node.reason.as_deref().unwrap_or("不支持此协议、配置或传输")
-                                }
-                            ))
-                    }))
+                            .child(div().flex_1().child("节点名称"))
+                            .child(column(54., "协议"))
+                            .child(column(94., "加入代理池")),
+                    )
+                    .child(
+                        div()
+                            .id("source-nodes")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .when(sub.nodes.is_empty(), |el| {
+                                el.child(quiet_line("没有缓存节点，可刷新订阅。"))
+                            })
+                            .children(sub.nodes.iter().map(|node| {
+                                let ready = node.revision.is_some();
+                                let joined = node.selectable();
+                                let node_id = node.id;
+                                let bindings = self
+                                    .workspace
+                                    .accounts
+                                    .iter()
+                                    .filter(|account| {
+                                        RouteChoice::from(account.network)
+                                            == RouteChoice::Node(node_id)
+                                    })
+                                    .count();
+                                let header = div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .id(node.id)
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(node.name.clone())
+                                            .tooltip({
+                                                let name = node.name.clone();
+                                                move |_, cx| {
+                                                    cx.new(|_| {
+                                                        super::chrome::AccountHint(name.clone())
+                                                    })
+                                                    .into()
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        column(54., node.protocol.to_ascii_uppercase())
+                                            .text_color(rgb(colors().secondary)),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(ElementId::Name(format!("join-{node_id}").into()))
+                                            .w(px(94.))
+                                            .flex_none()
+                                            .h(px(28.))
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .rounded_md()
+                                            .when(ready, |el| {
+                                                keyboard_control(el)
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.bg(rgb(colors().fill_hover)))
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        let result = proxy_pool::set_membership(
+                                                            &this.data_dir,
+                                                            &mut this.workspace,
+                                                            id,
+                                                            node_id,
+                                                            !joined,
+                                                        );
+                                                        if let Some(dialog) =
+                                                            &mut this.account_dialog
+                                                        {
+                                                            dialog.message =
+                                                                result.err().unwrap_or_default();
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                            })
+                                            .child(
+                                                div()
+                                                    .w(px(32.))
+                                                    .h(px(18.))
+                                                    .rounded_full()
+                                                    .p(px(2.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .bg(rgb(if joined {
+                                                        colors().primary
+                                                    } else {
+                                                        colors().track
+                                                    }))
+                                                    .when(joined, |el| el.justify_end())
+                                                    .child(div().size(px(14.)).rounded_full().bg(
+                                                        rgb(if joined {
+                                                            colors().on_primary
+                                                        } else {
+                                                            colors().panel
+                                                        }),
+                                                    )),
+                                            )
+                                            .child(if !ready {
+                                                "受限"
+                                            } else if joined {
+                                                "已开"
+                                            } else {
+                                                "已关"
+                                            }),
+                                    );
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_none()
+                                    .px_2()
+                                    .py(px(6.))
+                                    .border_t_1()
+                                    .border_color(rgb(colors().line))
+                                    .text_size(px(13.))
+                                    .child(header)
+                                    .when(bindings > 0, |row| {
+                                        row.child(
+                                            div()
+                                                .text_size(px(crate::theme::CAPTION))
+                                                .text_color(rgb(colors().secondary))
+                                                .child(format!(
+                                                    "{bindings} 个账号使用 · 现有绑定不变"
+                                                )),
+                                        )
+                                    })
+                                    .when(!ready, |row| {
+                                        row.child(
+                                            div()
+                                                .w_full()
+                                                .pt(px(2.))
+                                                .text_size(px(crate::theme::CAPTION))
+                                                .text_color(rgb(colors().attention))
+                                                .child(node.reason.clone().unwrap_or_else(|| {
+                                                    "刷新订阅可查看原因".into()
+                                                })),
+                                        )
+                                    })
+                            })),
+                    )
             }))
     }
 
@@ -1041,6 +1529,26 @@ impl MuseWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if screen == PoolScreen::List {
+            let mut dialog = self
+                .account_dialog
+                .take()
+                .and_then(|dialog| {
+                    if dialog.screen == Some(PoolScreen::List) {
+                        Some(dialog)
+                    } else {
+                        dialog.parked.map(|list| *list)
+                    }
+                })
+                .unwrap_or_else(|| self.new_pool_tab(PoolTab::Subscriptions, cx));
+            dialog.sources_open = false;
+            self.account_dialog = Some(dialog);
+            if let Some(focus) = &self.pool_focus {
+                window.focus(focus);
+            }
+            cx.notify();
+            return;
+        }
         let mut name = String::new();
         let mut message = String::new();
         let mut draft = ProxyDraft {
@@ -1063,6 +1571,14 @@ impl MuseWindow {
             draft.port = String::new();
         }
         let mut dialog = AccountDialog::new(None, false, &name, draft, cx);
+        if let Some(previous) = self
+            .account_dialog
+            .as_ref()
+            .filter(|dialog| dialog.screen.is_some())
+        {
+            dialog.tab = previous.tab;
+            dialog.source = previous.source;
+        }
         if screen == PoolScreen::Edit(None) {
             dialog.set_default_name(
                 format!("代理 {}", self.workspace.proxy_profiles.len() + 1),
@@ -1070,6 +1586,11 @@ impl MuseWindow {
             );
         }
         dialog.screen = Some(screen);
+        if screen == PoolScreen::AddSubscription {
+            dialog
+                .secret
+                .update(cx, |input, _| input.set_placeholder("订阅地址"));
+        }
         if screen == PoolScreen::Batch {
             dialog.batch = Some(BatchImport::new());
         }
@@ -1077,10 +1598,11 @@ impl MuseWindow {
         if self.account_dialog.is_some() || self.account_dialog_return.is_some() {
             dialog.transition = TransitionState::visible();
         }
+        dialog.parked = self.account_dialog.take().map(Box::new);
         if matches!(screen, PoolScreen::Edit(_) | PoolScreen::AddSubscription) {
             window.focus(&dialog.name.read(cx).focus_handle(cx));
         } else {
-            window.focus(&self.focus);
+            window.focus(self.pool_focus.as_ref().unwrap_or(&self.focus));
         }
         self.account_dialog = Some(dialog);
         cx.notify();
@@ -1120,16 +1642,30 @@ impl MuseWindow {
         };
         match result {
             Ok(affected) => {
+                if let PoolScreen::DeleteSubscription(id) = screen {
+                    self.pool_feedback.remove(&id);
+                }
                 for id in affected {
                     self.browsers.invalidate_account(id);
                     self.fail_studio_job(id, "账号代理已更新，请重新提交", cx);
                 }
                 self.refresh_proxy_editor(cx);
+                if screen == PoolScreen::Edit(None)
+                    && self
+                        .account_dialog
+                        .as_ref()
+                        .is_some_and(|d| d.screen == Some(PoolScreen::List))
+                {
+                    let mut fresh = self.new_pool_tab(PoolTab::Manual, cx);
+                    fresh.parked = self.account_dialog.take().and_then(|d| d.parked);
+                    self.account_dialog = Some(fresh);
+                }
                 self.show_proxy_pool_screen(PoolScreen::List, window, cx);
             }
             Err(error) => {
                 if let Some(dialog) = self.account_dialog.as_mut() {
                     dialog.message = error;
+                    dialog.test_ok = Some(false);
                 }
                 cx.notify();
             }
@@ -1139,38 +1675,7 @@ impl MuseWindow {
     fn render_pool_list(&self, cx: &Context<Self>) -> Div {
         let profiles = &self.workspace.proxy_profiles;
         if profiles.is_empty() {
-            return div()
-                .pt(px(56.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .size(px(44.))
-                        .rounded_full()
-                        .bg(rgb(colors().fill))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(glyph("shield-check", 20., colors().secondary)),
-                )
-                .child(
-                    div()
-                        .mt_2()
-                        .text_size(px(14.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("还没有代理"),
-                )
-                .child(
-                    div()
-                        .max_w(px(260.))
-                        .text_size(px(12.))
-                        .line_height(px(19.))
-                        .text_color(rgb(colors().secondary))
-                        .text_center()
-                        .child("新增一个代理后，可以在编辑账号时为账号选择它。多个账号可以共用同一个代理。"),
-                );
+            return quiet_line("尚未添加手动代理");
         }
         div()
             .flex()
@@ -1180,63 +1685,37 @@ impl MuseWindow {
                 let id = profile.id;
                 let users = proxy_pool::references(&self.workspace, id);
                 let count = users.len();
-                let names = users
-                    .iter()
-                    .filter_map(|account| self.workspace.account(*account))
-                    .map(|account| account.name.clone())
-                    .collect::<Vec<_>>();
-                let usage = match names.len() {
-                    0 => "未使用".to_owned(),
-                    1 | 2 => format!("{} 使用中", names.join("、")),
-                    n => format!("{} 等 {n} 个账号使用", names[..2].join("、")),
-                };
                 div()
                     .id(ElementId::Name(id.to_string().into()))
                     .px_3()
-                    .py(px(10.))
+                    .h(px(46.))
                     .rounded_lg()
                     .flex()
                     .items_center()
                     .gap_3()
                     .hover(|style| style.bg(rgb(colors().fill)))
-                    .child(
-                        div()
-                            .size(px(8.))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(rgb(if count > 0 {
-                                0x16A34A
-                            } else {
-                                tone(0xD4D4D8, 0x60606D)
-                            })),
-                    )
+                    .child(glyph("world", 16., colors().secondary).flex_none())
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(colors().text))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .child(profile.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(rgb(colors().secondary))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .child(format!(
-                                        "{} · {usage}",
-                                        profile.protocol.to_ascii_uppercase()
-                                    )),
-                            ),
+                            .id("manual-proxy-name")
+                            .truncate()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(profile.name.clone())
+                            .tooltip({
+                                let name = profile.name.clone();
+                                move |_, cx| {
+                                    cx.new(|_| super::chrome::AccountHint(name.clone())).into()
+                                }
+                            }),
+                    )
+                    .child(
+                        column(52., profile.protocol.to_ascii_uppercase())
+                            .text_color(rgb(colors().secondary)),
+                    )
+                    .child(
+                        column(72., format!("{count} 个账号")).text_color(rgb(colors().secondary)),
                     )
                     .child(icon_button(
                         "edit-pool-proxy",
@@ -1307,7 +1786,7 @@ impl MuseWindow {
             ));
         }
         for sub in &self.workspace.subscriptions {
-            for node in sub.nodes.iter().filter(|node| node.revision.is_some()) {
+            for node in sub.nodes.iter().filter(|node| node.selectable()) {
                 choices.push((
                     ElementId::Name(node.id.to_string().into()),
                     format!("{} / {}", sub.name, node.name),
@@ -1316,18 +1795,31 @@ impl MuseWindow {
                 ));
             }
         }
-        if matches!(dialog.route, RouteChoice::Node(_))
+        let current_note = if matches!(dialog.route, RouteChoice::Node(_))
             && !choices
                 .iter()
                 .any(|(_, _, _, route)| *route == dialog.route)
         {
-            choices.push((
-                "missing-node".into(),
-                "原订阅节点不可用".into(),
-                "未切换网络".into(),
-                dialog.route,
-            ));
-        }
+            let retained = self.workspace.subscriptions.iter().find_map(|sub| {
+                sub.nodes
+                    .iter()
+                    .find(|node| {
+                        RouteChoice::Node(node.id) == dialog.route && node.revision.is_some()
+                    })
+                    .map(|node| format!("{} / {}", sub.name, node.name))
+            });
+            let preserving = dialog
+                .owner
+                .and_then(|id| self.workspace.account(id))
+                .is_some_and(|account| RouteChoice::from(account.network) == dialog.route);
+            Some(match retained {
+                Some(name) if preserving => format!("当前：{name} · 未加入代理池 · 现有绑定不变"),
+                Some(name) => format!("{name} 未加入代理池，请重新选择"),
+                None => "原订阅节点不可用 · 未切换网络".into(),
+            })
+        } else {
+            None
+        };
         let rows = choices
             .into_iter()
             .enumerate()
@@ -1418,6 +1910,14 @@ impl MuseWindow {
                     .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
                     .children(rows),
             )
+            .when_some(current_note, |el, note| {
+                el.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(colors().secondary))
+                        .child(note),
+                )
+            })
             .when(
                 matches!(dialog.route, RouteChoice::Pool(_) | RouteChoice::Node(_)),
                 |element| {
@@ -1468,8 +1968,7 @@ impl MuseWindow {
 
     fn render_proxy_form(&self, dialog: &AccountDialog, cx: &Context<Self>) -> Div {
         let segment = |id, label, selected, protocol: Option<ProxyProtocol>| {
-            div()
-                .id(id)
+            keyboard_control(div().id(id))
                 .flex_1()
                 .h(px(30.))
                 .rounded_md()
@@ -1518,57 +2017,13 @@ impl MuseWindow {
                     cx.notify();
                 }))
         };
-        let reveal = link_button(
-            "dialog-reveal",
-            if dialog.reveal { "隐藏" } else { "显示" },
-            cx.listener(|this, _, _, cx| {
-                if let Some(d) = this.account_dialog.as_mut() {
-                    d.reveal = !d.reveal;
-                    d.secret
-                        .update(cx, |input, cx| input.set_secure(!d.reveal, cx));
-                }
-                cx.notify();
-            }),
-        );
-        let (dot, status_color) = match (dialog.pending, dialog.test_ok) {
-            (true, _) => (0xE8A317, colors().secondary),
-            (false, Some(true)) => (0x16A34A, tone(0x15803D, 0x77D4A4)),
-            (false, Some(false)) => (colors().danger, tone(0xB42318, 0xFF9B94)),
-            _ => (tone(0xD4D4D8, 0x60606D), colors().secondary),
-        };
+        let auth = dialog.advanced
+            || !dialog.user.read(cx).text().is_empty()
+            || !dialog.secret.read(cx).text().is_empty();
         div()
             .flex()
             .flex_col()
             .gap_4()
-            .child(
-                div()
-                    .id("dialog-paste")
-                    .h(px(38.))
-                    .px_3()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgb(tone(0xD4D4D8, 0x60606D)))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(colors().fill)))
-                    .child(glyph("copy", 14., colors().secondary))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(12.))
-                            .text_color(rgb(colors().text))
-                            .child("从剪贴板粘贴代理地址"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(rgb(colors().muted))
-                            .child("自动识别协议与账密"),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| this.paste_dialog_proxy(cx))),
-            )
             .child(
                 div()
                     .flex()
@@ -1609,23 +2064,36 @@ impl MuseWindow {
                             .child(dialog_field("端口", dialog.port.clone())),
                     ),
             )
-            .child(dialog_field("用户名（可选）", dialog.user.clone()))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(field_label("密码（可选）"))
-                            .child(reveal),
-                    )
-                    .child(field_box(dialog.secret.clone())),
+                    .items_center()
+                    .gap_2()
+                    .child(glyph(
+                        if auth {
+                            "chevron-down"
+                        } else {
+                            "chevron-right"
+                        },
+                        14.,
+                        colors().secondary,
+                    ))
+                    .child(link_button(
+                        "pool-auth",
+                        "身份认证（可选）",
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(dialog) = &mut this.account_dialog {
+                                dialog.advanced = !dialog.advanced;
+                            }
+                            cx.notify();
+                        }),
+                    )),
             )
-            .child(checkbox_row(
+            .when(auth, |el| {
+                el.child(dialog_field("用户名", dialog.user.clone()))
+                    .child(dialog_field("密码", dialog.secret.clone()))
+            })
+            .child(keyboard_control(checkbox_row(
                 "dialog-force",
                 "本机地址也经过此代理",
                 dialog.force,
@@ -1635,43 +2103,40 @@ impl MuseWindow {
                     }
                     cx.notify();
                 }),
-            ))
+            )))
             .child(
                 div()
-                    .p_3()
-                    .rounded_lg()
-                    .bg(rgb(tone(0xFAFAFB, 0x1D1D21)))
-                    .border_1()
-                    .border_color(rgb(colors().line))
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(div().size(px(8.)).flex_none().rounded_full().bg(rgb(dot)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(px(12.))
-                            .line_height(px(18.))
-                            .text_color(rgb(status_color))
-                            .child(if dialog.message.is_empty() {
-                                "仅测试认证及 muse.ai:443 隧道，不验证目标 TLS/页面，不保存配置"
-                                    .to_owned()
-                            } else {
-                                dialog.message.clone()
-                            }),
-                    )
-                    .child(dialog_button(
-                        "dialog-test",
-                        if dialog.pending {
-                            "测试中…"
-                        } else {
-                            "测试隧道"
-                        },
-                        ButtonKind::Secondary,
-                        cx.listener(|this, _, _, cx| this.test_dialog_proxy(cx)),
-                    )),
+                    .child(link_button(
+                        "dialog-paste",
+                        "粘贴代理地址",
+                        cx.listener(|this, _, _, cx| this.paste_dialog_proxy(cx)),
+                    ))
+                    .child(if dialog.pending {
+                        disabled_button("测试中…")
+                    } else {
+                        link_button(
+                            "dialog-test",
+                            "测试隧道",
+                            cx.listener(|this, _, _, cx| this.test_dialog_proxy(cx)),
+                        )
+                        .into_any_element()
+                    }),
             )
+            .when(!dialog.message.is_empty(), |el| {
+                el.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(if dialog.test_ok == Some(false) {
+                            colors().danger
+                        } else {
+                            colors().secondary
+                        }))
+                        .child(dialog.message.clone()),
+                )
+            })
     }
 
     pub(super) fn render_account_dialog(
@@ -1680,64 +2145,33 @@ impl MuseWindow {
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let dialog = self.account_dialog.as_ref().unwrap();
+        if let Some(screen) = dialog.screen {
+            return self.render_pool_view(screen, dialog, window, cx);
+        }
         let transition = dialog.transition;
         let exiting = transition.is_exiting();
         let viewport = window.viewport_size();
-        let (title, subtitle) = match dialog.screen {
-            Some(PoolScreen::AddSubscription) => {
-                ("添加订阅", "Clash YAML 或明文 / Base64 节点列表".into())
-            }
-            Some(PoolScreen::DeleteSubscription(_)) => (
-                "删除订阅",
-                "绑定此订阅的账号将停止联网，直到手动选择新出口".into(),
-            ),
-            Some(PoolScreen::List) => (
-                "代理池",
-                format!(
-                    "{} 个代理 · 多个账号可共用",
-                    self.workspace.proxy_profiles.len()
-                ),
-            ),
-            Some(PoolScreen::Edit(None)) => ("新增代理", "支持 HTTP、HTTPS、SOCKS5".into()),
-            Some(PoolScreen::Batch) => {
-                ("批量导入代理", "预览有效项后确认追加，密码始终隐藏".into())
-            }
-            Some(PoolScreen::Edit(Some(_))) => {
-                ("编辑代理", "保存后，使用此代理的账号会重新连接".into())
-            }
-            Some(PoolScreen::Remove(_)) => ("删除代理", "删除后无法恢复".into()),
-            None if dialog.removing => ("移除账号", "只从账号列表移除".into()),
-            None if dialog.owner.is_some() => (
+        let (title, subtitle) = if dialog.removing {
+            ("移除账号", "只从账号列表移除")
+        } else if dialog.owner.is_some() {
+            (
                 "编辑账号",
-                "改名不会重新加载网页；更换网络或指纹模式会重建浏览器，登录数据保留。".into(),
-            ),
-            None => (
-                "新增账号",
-                "每个账号使用独立的浏览器环境，登录互不影响。".into(),
-            ),
+                "改名不会重新加载网页；更换网络或指纹模式会重建浏览器，登录数据保留。",
+            )
+        } else {
+            ("新增账号", "每个账号使用独立的浏览器环境，登录互不影响。")
         };
-        let drawer = dialog.screen.is_some();
-        let sub_screen = matches!(
-            dialog.screen,
-            Some(PoolScreen::Edit(_) | PoolScreen::Remove(_) | PoolScreen::Batch)
-        );
 
-        let close = div()
-            .id("dialog-close")
-            .size(px(30.))
-            .flex_none()
-            .rounded_lg()
-            .cursor_pointer()
-            .flex()
-            .items_center()
-            .justify_center()
-            .hover(|s| s.bg(rgb(colors().fill)))
-            .child(glyph(
-                if sub_screen { "arrow-left" } else { "x" },
-                15.,
-                colors().secondary,
-            ))
-            .on_click(cx.listener(|this, _, window, cx| this.close_account_dialog(window, cx)));
+        let close = icon_button(
+            "dialog-close",
+            "x",
+            "关闭",
+            true,
+            false,
+            cx.listener(move |this, _, window, cx| {
+                this.close_account_dialog(window, cx);
+            }),
+        );
         let heading = div()
             .flex_1()
             .min_w_0()
@@ -1746,7 +2180,7 @@ impl MuseWindow {
             .gap_1()
             .child(
                 div()
-                    .text_size(px(16.))
+                    .text_size(px(crate::theme::HEADING))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(colors().text))
                     .child(title),
@@ -1758,48 +2192,16 @@ impl MuseWindow {
                     .text_color(rgb(colors().secondary))
                     .child(subtitle),
             );
-        let header = if drawer {
-            div()
-                .flex_none()
-                .px_4()
-                .py_3()
-                .border_b_1()
-                .border_color(rgb(colors().line))
-                .flex()
-                .items_center()
-                .gap_2()
-                .when(sub_screen, |element| element.child(close))
-                .child(heading)
-                .when(!sub_screen, |element| {
-                    element.child(
-                        div()
-                            .id("dialog-close")
-                            .size(px(30.))
-                            .flex_none()
-                            .rounded_lg()
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .hover(|s| s.bg(rgb(colors().fill)))
-                            .child(glyph("x", 15., colors().secondary))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.close_account_dialog(window, cx)
-                            })),
-                    )
-                })
-        } else {
-            div()
-                .flex_none()
-                .px_6()
-                .pt_5()
-                .pb_2()
-                .flex()
-                .items_start()
-                .gap_3()
-                .child(heading)
-                .child(close)
-        };
+        let header = div()
+            .flex_none()
+            .px_6()
+            .pt_5()
+            .pb_2()
+            .flex()
+            .items_start()
+            .gap_3()
+            .child(heading)
+            .child(close);
 
         let mut body = div()
             .id("account-dialog-scroll")
@@ -1809,58 +2211,31 @@ impl MuseWindow {
             .flex()
             .flex_col()
             .gap_4()
-            .when(drawer, |element| element.px_4().py_4())
-            .when(!drawer, |element| element.px_6().pt_3().pb_2());
-        body =
-            match dialog.screen {
-                Some(PoolScreen::List) => body.child(self.render_subscriptions(cx)).child(field_label("手动代理")).child(self.render_pool_list(cx)),
-                Some(PoolScreen::AddSubscription) => body.child(dialog_field("订阅名称", dialog.name.clone())).child(dialog_field("订阅地址", dialog.secret.clone())),
-                Some(PoolScreen::DeleteSubscription(id)) => body.child(self.workspace.subscriptions.iter().find(|sub| sub.id == id).map(|sub| sub.name.clone()).unwrap_or_default()),
-                Some(PoolScreen::Batch) => body.child(self.render_proxy_batch(dialog, cx)),
-                Some(PoolScreen::Edit(_)) => body
-                    .child(dialog_field("代理名称", dialog.name.clone()))
-                    .child(self.render_proxy_form(dialog, cx)),
-                Some(PoolScreen::Remove(_)) => body.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .text_color(rgb(colors().text))
-                                .child(format!("确认删除「{}」？", dialog.name.read(cx).text())),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(rgb(colors().secondary))
-                                .child("只能删除没有账号使用的代理。"),
-                        ),
-                ),
-                None if dialog.removing => body.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .text_color(rgb(colors().text))
-                                .child(format!("确认移除「{}」？", dialog.name.read(cx).text())),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .line_height(px(19.))
-                                .text_color(rgb(colors().secondary))
-                                .child(
-                                    "账号的浏览器数据和登录状态会保留在本机，之后可以重新导入。",
-                                ),
-                        ),
-                ),
-                None => {
-                    body.child(dialog_field("账号名称", dialog.name.clone()))
+            .px_6()
+            .pt_3()
+            .pb_2();
+        body = if dialog.removing {
+            body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .text_color(rgb(colors().text))
+                            .child(format!("确认移除「{}」？", dialog.name.read(cx).text())),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(19.))
+                            .text_color(rgb(colors().secondary))
+                            .child("账号的浏览器数据和登录状态会保留在本机，之后可以重新导入。"),
+                    ),
+            )
+        } else {
+            body.child(dialog_field("账号名称", dialog.name.clone()))
                         .when(dialog.owner.is_none(), |element| {
                             element.child(
                         div().flex().flex_col().gap_1()
@@ -1888,59 +2263,39 @@ impl MuseWindow {
                                     .text_color(rgb(colors().secondary))
                                     .child("只设置语言和时区；修改后重开此账号全部标签页，保留原目录与 Cookie。不根据代理推断，也不修改 Canvas、WebGL 或浏览器身份。"))
                         )
-                }
-            };
-        if !dialog.message.is_empty() && !matches!(dialog.screen, Some(PoolScreen::Edit(_))) {
-            body = body.child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .rounded_lg()
-                    .bg(rgb(if dialog.test_ok == Some(true) {
-                        colors().fill
-                    } else {
-                        tone(0xFEF3F2, 0x3D2225)
-                    }))
-                    .text_size(px(12.))
-                    .line_height(px(19.))
-                    .text_color(rgb(if dialog.test_ok == Some(true) {
-                        colors().secondary
-                    } else {
-                        tone(0xB42318, 0xFF9B94)
-                    }))
-                    .child(dialog.message.clone()),
-            );
-        }
-
-        let save = |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-            if this
-                .account_dialog
-                .as_ref()
-                .is_some_and(|dialog| dialog.screen == Some(PoolScreen::List))
-            {
-                this.show_proxy_pool_screen(PoolScreen::Edit(None), window, cx);
-            } else {
-                this.save_account_dialog(window, cx);
-            }
         };
-        let (save_label, save_kind) = match dialog.screen {
-            Some(PoolScreen::AddSubscription) => ("获取节点并保存", ButtonKind::Primary),
-            Some(PoolScreen::DeleteSubscription(_)) => ("确认删除订阅", ButtonKind::Danger),
-            Some(PoolScreen::List) => ("新增代理", ButtonKind::Primary),
-            Some(PoolScreen::Batch) => ("确认导入有效项", ButtonKind::Primary),
-            Some(PoolScreen::Remove(_)) => ("确认删除", ButtonKind::Danger),
-            Some(PoolScreen::Edit(_)) => ("保存代理", ButtonKind::Primary),
-            None if dialog.removing => ("确认移除", ButtonKind::Danger),
-            None if dialog.owner.is_none() => ("创建账号", ButtonKind::Primary),
-            None => ("保存", ButtonKind::Primary),
+        let notice = (!dialog.message.is_empty()).then(|| {
+            div()
+                .flex_none()
+                .px_3()
+                .py_2()
+                .rounded_lg()
+                .bg(rgb(if dialog.test_ok == Some(true) {
+                    colors().fill
+                } else {
+                    tone(0xFEF3F2, 0x3D2225)
+                }))
+                .text_size(px(12.))
+                .line_height(px(19.))
+                .text_color(rgb(if dialog.test_ok == Some(true) {
+                    colors().secondary
+                } else {
+                    tone(0xB42318, 0xFF9B94)
+                }))
+                .child(dialog.message.clone())
+        });
+        body = body.children(notice);
+
+        let (save_label, save_kind) = if dialog.removing {
+            ("确认移除", ButtonKind::Danger)
+        } else if dialog.owner.is_none() {
+            ("创建账号", ButtonKind::Primary)
+        } else {
+            ("保存", ButtonKind::Primary)
         };
         let cancel = dialog_button(
             "dialog-cancel",
-            match dialog.screen {
-                Some(PoolScreen::List) => "关闭",
-                Some(_) => "返回",
-                None => "取消",
-            },
+            "取消",
             ButtonKind::Secondary,
             cx.listener(|this, _, window, cx| this.close_account_dialog(window, cx)),
         );
@@ -1948,68 +2303,29 @@ impl MuseWindow {
             "dialog-save",
             save_label,
             save_kind,
-            cx.listener(move |this, _, window, cx| save(this, window, cx)),
+            cx.listener(|this, _, window, cx| this.save_account_dialog(window, cx)),
         )
-        .when(
-            dialog
-                .batch
-                .as_ref()
-                .is_some_and(|batch| !batch.can_confirm()),
-            |el| el.opacity(0.45).cursor(CursorStyle::Arrow),
-        );
-        let footer = if drawer {
-            div()
-                .flex_none()
-                .p_4()
-                .border_t_1()
-                .border_color(rgb(colors().line))
-                .flex()
-                .gap_2()
-                .when(dialog.screen == Some(PoolScreen::List), |el| {
-                    el.child(dialog_button(
-                        "pool-add-sub",
-                        "添加订阅",
-                        ButtonKind::Secondary,
-                        cx.listener(|this, _, window, cx| {
-                            this.show_proxy_pool_screen(PoolScreen::AddSubscription, window, cx)
-                        }),
-                    ))
-                    .child(
-                        dialog_button(
-                            "pool-batch-import",
-                            "批量导入",
-                            ButtonKind::Secondary,
-                            cx.listener(|this, _, window, cx| {
-                                this.show_proxy_pool_screen(PoolScreen::Batch, window, cx)
-                            }),
-                        )
-                        .flex_1(),
-                    )
-                })
-                .child(cancel.flex_1())
-                .child(confirm.flex_1())
-        } else {
-            div()
-                .flex_none()
-                .px_6()
-                .pt_3()
-                .pb_5()
-                .flex()
-                .items_center()
-                .justify_end()
-                .gap_2()
-                .when(!dialog.removing, |element| {
-                    element.child(
-                        div()
-                            .flex_1()
-                            .text_size(px(11.))
-                            .text_color(rgb(colors().muted))
-                            .child("Ctrl+Enter 保存 · Esc 取消"),
-                    )
-                })
-                .child(cancel)
-                .child(confirm)
-        };
+        .into_any_element();
+        let footer = div()
+            .flex_none()
+            .px_6()
+            .pt_3()
+            .pb_5()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .when(!dialog.removing, |element| {
+                element.child(
+                    div()
+                        .flex_1()
+                        .text_size(px(11.))
+                        .text_color(rgb(colors().muted))
+                        .child("Ctrl+Enter 保存 · Esc 取消"),
+                )
+            })
+            .child(cancel)
+            .child(confirm);
 
         let panel = div()
             .id("account-modal")
@@ -2022,9 +2338,7 @@ impl MuseWindow {
             .child(header)
             .child(body)
             .child(footer);
-        let surface = if drawer {
-            div().size_full().child(panel)
-        } else {
+        let surface = {
             let max_height = (f32::from(viewport.height) - 80.).max(360.);
             div()
                 .absolute()
@@ -2039,7 +2353,7 @@ impl MuseWindow {
                         .max_h(px(max_height))
                         .rounded(px(14.))
                         .border_1()
-                        .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+                        .border_color(rgb(modal_border()))
                         .shadow_lg(),
                     transition,
                     self.motion_policy,
@@ -2060,10 +2374,7 @@ impl MuseWindow {
                 }),
             )
             .child(crate::motion::fade(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(rgba(if drawer { 0x00000000 } else { 0x18181B47 })),
+                div().absolute().inset_0().bg(rgba(0x18181B47)),
                 transition,
                 self.motion_policy,
             ))
@@ -2087,6 +2398,39 @@ pub(super) enum ButtonKind {
     Danger,
 }
 
+fn disabled_button(label: &'static str) -> AnyElement {
+    div()
+        .h(px(34.))
+        .px_4()
+        .flex()
+        .items_center()
+        .rounded_lg()
+        .bg(rgb(colors().fill))
+        .text_color(rgb(colors().muted))
+        .child(label)
+        .into_any_element()
+}
+
+fn section_title(label: &'static str) -> Div {
+    div()
+        .text_size(px(crate::theme::SECTION))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(label)
+}
+
+fn column(width: f32, text: impl Into<SharedString>) -> Div {
+    div().w(px(width)).flex_none().child(text.into())
+}
+
+fn quiet_line(label: &'static str) -> Div {
+    div()
+        .px_2()
+        .py_2()
+        .text_size(px(crate::theme::CAPTION))
+        .text_color(rgb(colors().secondary))
+        .child(label)
+}
+
 pub(super) fn dialog_button(
     id: &'static str,
     label: impl Into<SharedString>,
@@ -2107,8 +2451,7 @@ pub(super) fn dialog_button(
         ),
     };
     let label: SharedString = label.into();
-    div()
-        .id(id)
+    keyboard_control(div().id(id))
         .h(px(34.))
         .px_4()
         .flex_none()
@@ -2131,8 +2474,7 @@ fn link_button(
     label: &'static str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
-    div()
-        .id(id)
+    keyboard_control(div().id(id))
         .px_1()
         .rounded_sm()
         .text_size(px(12.))
@@ -2215,14 +2557,20 @@ fn field_label(label: &'static str) -> Div {
         .child(label)
 }
 
-fn field_box(input: Entity<TextInput>) -> Div {
-    div()
-        .rounded_lg()
-        .overflow_hidden()
-        .border_1()
-        .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
-        .bg(rgb(colors().panel))
-        .child(input)
+fn field_box(input: Entity<TextInput>) -> impl IntoElement {
+    crate::input::InputField::new(
+        input,
+        div()
+            .rounded_lg()
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+            .bg(rgb(colors().panel)),
+    )
+}
+
+fn modal_border() -> u32 {
+    tone(0xE4E4E7, 0x3F3F46)
 }
 
 pub(super) fn dialog_field(label: &'static str, input: Entity<TextInput>) -> Div {

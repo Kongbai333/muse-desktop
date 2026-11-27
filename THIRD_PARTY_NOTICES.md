@@ -34,14 +34,14 @@ Cancellation and owned connection-task shutdown use tokio-util 0.7.20 (MIT)
 on the existing Tokio runtime. New transitive components are tokio-stream
 0.1.19 (MIT) and socket2 0.5.10 (MIT OR Apache-2.0).
 Their original license notices are included under LICENSES/.
-No independent proxy engine executable or Go runtime is distributed.
+`mihomo.exe` is a separately launched, modified Mihomo v1.19.34 (GPLv3), built with the Go runtime. See `kernel/README.md` for its exact source, dependencies, notices, and reproducible build. The source archive includes the individual module license and attribution files. No Wintun binary or system TUN backend is included.
 
 Fixed subscription nodes use the embedded shadowsocks 1.23.2 TCP client
 (MIT, https://github.com/shadowsocks/shadowsocks-rust), shadowsocks-crypto
 and its AEAD dependencies. Clash YAML uses serde_yaml_ng 0.10.0
 (MIT, https://github.com/acatton/serde-yaml-ng) and unsafe-libyaml.
 License texts for the additional Windows dependencies are under LICENSES/.
-No protocol executable, plugin, external provider or script is downloaded.
+No protocol executable, plugin or script is downloaded at runtime.
 
 VLESS, VMess AEAD and Trojan use the Rust wire codecs in marmo-proto and
 marmo-net 0.0.4, licensed under MIT or Apache-2.0. The published crates

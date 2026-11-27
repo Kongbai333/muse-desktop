@@ -10,6 +10,31 @@ use gpui::{
 };
 use unicode_segmentation::*;
 
+mod caret;
+use caret::Caret;
+
+#[derive(IntoElement)]
+pub struct InputField {
+    input: Entity<TextInput>,
+    shell: gpui::Div,
+}
+
+impl InputField {
+    pub fn new(input: Entity<TextInput>, shell: gpui::Div) -> Self {
+        Self { input, shell }
+    }
+}
+
+impl RenderOnce for InputField {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.shell
+            .when(self.input.read(cx).shows_focus(window), |shell| {
+                shell.border_color(rgb(crate::theme::colors().blue))
+            })
+            .child(self.input)
+    }
+}
+
 actions!(
     text_input,
     [
@@ -32,6 +57,7 @@ actions!(
 
 pub struct TextInput {
     focus_handle: FocusHandle,
+    caret: Entity<Caret>,
     content: SharedString,
     placeholder: SharedString,
     placeholder_color: Option<u32>,
@@ -41,6 +67,7 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    scroll_x: Pixels,
     is_selecting: bool,
     secure: bool,
     exact_paste: bool,
@@ -168,7 +195,13 @@ impl TextInput {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
-        cx.notify()
+        self.selection_reversed = false;
+        self.notify_edit(cx)
+    }
+
+    fn notify_edit(&mut self, cx: &mut Context<Self>) {
+        self.caret.update(cx, |caret, _| caret.restart());
+        cx.notify();
     }
 
     fn cursor_offset(&self) -> usize {
@@ -196,7 +229,7 @@ impl TextInput {
         }
         crate::input_mask::source_index(
             &self.content,
-            line.closest_index_for_x(position.x - bounds.left()),
+            line.closest_index_for_x(position.x - bounds.left() + self.scroll_x),
             self.secure,
         )
     }
@@ -211,14 +244,18 @@ impl TextInput {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
-        cx.notify()
+        self.notify_edit(cx)
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
+        Self::utf8_offset(&self.content, offset)
+    }
+
+    fn utf8_offset(text: &str, offset: usize) -> usize {
         let mut utf8_offset = 0;
         let mut utf16_count = 0;
 
-        for ch in self.content.chars() {
+        for ch in text.chars() {
             if utf16_count >= offset {
                 break;
             }
@@ -274,6 +311,7 @@ impl TextInput {
         self.marked_range = None;
         self.last_layout = None;
         self.last_bounds = None;
+        self.scroll_x = px(0.);
         self.is_selecting = false;
     }
 }
@@ -313,8 +351,9 @@ impl EntityInputHandler for TextInput {
             .map(|range| self.range_to_utf16(range))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.marked_range = None;
+        self.notify_edit(cx);
     }
 
     fn replace_text_in_range(
@@ -334,9 +373,10 @@ impl EntityInputHandler for TextInput {
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
+        self.selection_reversed = false;
         self.marked_range.take();
         self.revision = self.revision.wrapping_add(1);
-        cx.notify();
+        self.notify_edit(cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -363,13 +403,16 @@ impl EntityInputHandler for TextInput {
         }
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.start)
+            .map(|selected| {
+                range.start + Self::utf8_offset(new_text, selected.start)
+                    ..range.start + Self::utf8_offset(new_text, selected.end)
+            })
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        self.selection_reversed = false;
 
         self.revision = self.revision.wrapping_add(1);
 
-        cx.notify();
+        self.notify_edit(cx);
     }
 
     fn bounds_for_range(
@@ -383,7 +426,7 @@ impl EntityInputHandler for TextInput {
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
             point(
-                bounds.left()
+                bounds.left() - self.scroll_x
                     + last_layout.x_for_index(crate::input_mask::display_index(
                         &self.content,
                         range.start,
@@ -392,7 +435,7 @@ impl EntityInputHandler for TextInput {
                 bounds.top(),
             ),
             point(
-                bounds.left()
+                bounds.left() - self.scroll_x
                     + last_layout.x_for_index(crate::input_mask::display_index(
                         &self.content,
                         range.end,
@@ -412,7 +455,7 @@ impl EntityInputHandler for TextInput {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
 
-        let utf8_index = last_layout.index_for_x(line_point.x)?;
+        let utf8_index = last_layout.closest_index_for_x(line_point.x + self.scroll_x);
         Some(self.offset_to_utf16(crate::input_mask::source_index(
             &self.content,
             utf8_index,
@@ -426,6 +469,7 @@ struct TextElement {
 }
 
 struct PrepaintState {
+    scroll_x: Pixels,
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
@@ -498,7 +542,7 @@ impl Element for TextElement {
                     .unwrap_or_else(|| rgb(crate::theme::colors().muted).into()),
             )
         } else {
-            (content, style.color)
+            (content, rgb(crate::theme::colors().text).into())
         };
 
         let run = TextRun {
@@ -543,12 +587,23 @@ impl Element for TextElement {
             .shape_line(display_text, font_size, &runs, None);
 
         let cursor_pos = line.x_for_index(cursor);
+        let visible = (bounds.size.width - px(2.)).max(px(0.));
+        let scroll_x = if input.focus_handle.is_focused(window) {
+            input
+                .scroll_x
+                .min(cursor_pos)
+                .max(cursor_pos - visible)
+                .min((line.width - visible).max(px(0.)))
+        } else {
+            px(0.)
+        };
+        let left = bounds.left() - scroll_x;
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
+                        point(left + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
                     rgb(crate::theme::colors().blue),
@@ -558,21 +613,16 @@ impl Element for TextElement {
             (
                 Some(fill(
                     Bounds::from_corners(
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.start),
-                            bounds.top(),
-                        ),
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.end),
-                            bounds.bottom(),
-                        ),
+                        point(left + line.x_for_index(selected_range.start), bounds.top()),
+                        point(left + line.x_for_index(selected_range.end), bounds.bottom()),
                     ),
-                    rgba(0x2F6FEB26),
+                    rgba(crate::theme::tone(0x2F6FEB38, 0x82AAFF4D)),
                 )),
                 None,
             )
         };
         PrepaintState {
+            scroll_x,
             line: Some(line),
             cursor,
             selection,
@@ -595,28 +645,45 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = prepaint.selection.take() {
-            window.paint_quad(selection)
-        }
         let line = prepaint.line.take().unwrap();
-        line.paint(bounds.origin, window.line_height(), window, cx)
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            if let Some(selection) = prepaint.selection.take() {
+                window.paint_quad(selection)
+            }
+            line.paint(
+                point(bounds.left() - prepaint.scroll_x, bounds.top()),
+                window.line_height(),
+                window,
+                cx,
+            )
             .unwrap();
 
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
+            if window.is_window_active()
+                && focus_handle.is_focused(window)
+                && self.input.read(cx).caret.read(cx).visible
+                && let Some(cursor) = prepaint.cursor.take()
+            {
+                window.paint_quad(cursor);
+            }
+        });
 
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
             input.last_bounds = Some(bounds);
+            input.scroll_x = prepaint.scroll_x;
         });
     }
 }
 
 impl Render for TextInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let blink = window.is_window_active()
+            && self.is_focused(window)
+            && self.selected_range.is_empty()
+            && self.marked_range.is_none();
+        self.caret.update(cx, |caret, cx| {
+            caret.sync(blink, &self.focus_handle, window, cx)
+        });
         div()
             .flex()
             .key_context("TextInput")
@@ -640,6 +707,7 @@ impl Render for TextInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
+            .pb(px(2.))
             .overflow_hidden()
             .line_height(px(22.))
             .text_size(px(self.font_size))
@@ -663,7 +731,8 @@ impl Focusable for TextInput {
 impl TextInput {
     pub fn new(text: &str, cx: &mut Context<Self>) -> Self {
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
+            caret: cx.new(|_| Caret::new()),
             content: text.to_owned().into(),
             placeholder: "输入网址后按回车".into(),
             placeholder_color: None,
@@ -674,6 +743,7 @@ impl TextInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            scroll_x: px(0.),
             is_selecting: false,
             secure: false,
             exact_paste: false,
@@ -707,15 +777,19 @@ impl TextInput {
         self.content = text.to_owned().into();
         self.selected_range = self.content.len()..self.content.len();
         self.revision = self.revision.wrapping_add(1);
-        cx.notify();
+        self.notify_edit(cx);
     }
     pub fn focus_and_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle);
         self.selected_range = 0..self.content.len();
-        cx.notify();
+        self.selection_reversed = false;
+        self.notify_edit(cx);
     }
     pub fn is_focused(&self, window: &Window) -> bool {
         self.focus_handle.is_focused(window)
+    }
+    pub fn shows_focus(&self, window: &Window) -> bool {
+        window.is_window_active() && self.is_focused(window)
     }
 }
 

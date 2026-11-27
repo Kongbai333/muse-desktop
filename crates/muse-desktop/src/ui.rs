@@ -151,6 +151,8 @@ pub struct MuseWindow {
     account_dialog: Option<account_dialog::AccountDialog>,
     account_dialog_return: Option<account_dialog::AccountDialog>,
     pool_window: Option<WindowHandle<account_dialog::PoolWindow>>,
+    pool_focus: Option<FocusHandle>,
+    pool_feedback: HashMap<uuid::Uuid, account_dialog::SourceFeedback>,
     cached_accounts: HashSet<AccountId>,
     refresh_accounts: HashMap<AccountId, (muse_core::BrowserIdentity, Instant)>,
     studio: crate::studio::Studio,
@@ -169,7 +171,16 @@ impl MuseWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let display = muse_core::DisplayPreferences::load(&data_dir);
+        let mut display = muse_core::DisplayPreferences::load(&data_dir);
+        if display.follow_system_theme {
+            display.theme = Self::system_theme(window);
+        }
+        cx.observe_window_appearance(window, |this, window, cx| {
+            if this.display.follow_system_theme {
+                this.set_theme(None, window, cx);
+            }
+        })
+        .detach();
         crate::theme::set_mode(display.theme);
         let (mut workspace, mut startup_error) =
             match Workspace::load(&data_dir.join("workspace.json")) {
@@ -398,6 +409,8 @@ impl MuseWindow {
             account_dialog: None,
             account_dialog_return: None,
             pool_window: None,
+            pool_focus: None,
+            pool_feedback: HashMap::new(),
             cached_accounts,
             refresh_accounts: HashMap::new(),
             studio,
@@ -650,15 +663,24 @@ impl MuseWindow {
         true
     }
 
+    fn system_theme(window: &Window) -> muse_core::ThemeMode {
+        match window.appearance() {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => muse_core::ThemeMode::Dark,
+            _ => muse_core::ThemeMode::Light,
+        }
+    }
+
     fn set_theme(
         &mut self,
-        mode: muse_core::ThemeMode,
+        choice: Option<muse_core::ThemeMode>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.display.theme == mode {
+        let mode = choice.unwrap_or_else(|| Self::system_theme(window));
+        if self.display.theme == mode && self.display.follow_system_theme == choice.is_none() {
             return;
         }
+        self.display.follow_system_theme = choice.is_none();
         self.display.theme = mode;
         crate::theme::set_mode(mode);
         self.status = match mode {

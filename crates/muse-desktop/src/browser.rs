@@ -76,6 +76,7 @@ pub struct HostedTab {
     pub view: WebView,
     _context: WebContext,
     _route: Option<Arc<AccountRoute>>,
+    last_certificate_error: Cell<Option<&'static str>>,
     gate: Arc<Mutex<PageGate>>,
     trace: Arc<Mutex<crate::proxy_trace::Navigation>>,
     last_probe: Cell<u64>,
@@ -493,22 +494,20 @@ impl BrowserPool {
                     let (id, revision) = credential.ok_or("账号出口缺失；未打开页面")?;
                     let secret = crate::secrets::ProtectedStore::new(&self.data_root)
                         .load_selected(id, revision)?;
-                    let upstream = Upstream::parse(secret.as_str()).map_err(|e| e.to_string())?;
-                    let upstream = if matches!(network, AccountNetwork::SubscriptionNode { .. }) {
-                        upstream.fixed_node()
-                    } else {
-                        upstream
+                    let context = TraceContext {
+                        account: crate::proxy_trace::account(identity.account_id),
+                        binding: Some(crate::proxy_trace::binding(network)),
+                        proxy_required: Some(true),
+                        force_proxy: Some(network.force_proxy()),
+                        ..Default::default()
                     };
-                    AccountRoute::start(
-                        upstream,
-                        TraceContext {
-                            account: crate::proxy_trace::account(identity.account_id),
-                            binding: Some(crate::proxy_trace::binding(network)),
-                            proxy_required: Some(true),
-                            force_proxy: Some(network.force_proxy()),
-                            ..Default::default()
-                        },
-                    )
+                    let subscription = matches!(network, AccountNetwork::SubscriptionNode { .. });
+                    if subscription {
+                        AccountRoute::managed(&self.data_root, &secret, context)
+                    } else {
+                        let upstream = Upstream::parse(&secret).map_err(|e| e.to_string())?;
+                        AccountRoute::start(upstream, context)
+                    }
                     .map(Arc::new)
                     .map_err(|e| e.to_string())
                 })();
@@ -710,6 +709,7 @@ impl BrowserPool {
             self.sender.clone(),
             gate.clone(),
             native_trace.clone(),
+            route.clone(),
         )?;
         #[cfg(target_os = "windows")]
         crate::browser_locale::apply_timezone(&view, locale.timezone.as_deref())?;
@@ -722,6 +722,7 @@ impl BrowserPool {
                 view,
                 _context: context,
                 _route: route,
+                last_certificate_error: Cell::new(None),
                 gate,
                 trace: native_trace,
                 last_probe: Cell::new(0),
@@ -1041,6 +1042,18 @@ impl BrowserPool {
         else {
             return;
         };
+        let certificate_error = tab
+            ._route
+            .as_ref()
+            .and_then(|route| route.certificate_error());
+        if tab.last_certificate_error.replace(certificate_error) != certificate_error
+            && let Some(error) = certificate_error
+        {
+            let _ = self.sender.send(BrowserMessage::State(
+                identity,
+                BrowserEvent::Error(error.into()),
+            ));
+        }
         let now = page_observer::now_ms();
         let (epoch, ready, failed) = {
             let mut gate = tab.gate.lock().unwrap();
@@ -1052,7 +1065,13 @@ impl BrowserPool {
                 }
                 let _ = self.sender.send(BrowserMessage::State(
                     identity,
-                    BrowserEvent::Error("页面就绪检查超时".into()),
+                    BrowserEvent::Error(
+                        tab._route
+                            .as_ref()
+                            .and_then(|route| route.certificate_error())
+                            .unwrap_or("页面就绪检查超时")
+                            .into(),
+                    ),
                 ));
             }
             (gate.epoch(), gate.ready(), gate.failed())
@@ -1488,6 +1507,7 @@ fn install_navigation_errors(
     sender: Sender<BrowserMessage>,
     gate: Arc<Mutex<PageGate>>,
     trace: Arc<Mutex<crate::proxy_trace::Navigation>>,
+    route: Option<Arc<AccountRoute>>,
 ) -> Result<(), String> {
     let start_gate = gate.clone();
     let start_trace = trace.clone();
@@ -1576,7 +1596,13 @@ fn install_navigation_errors(
                 }
                 let _ = sender.send(BrowserMessage::State(
                     identity,
-                    BrowserEvent::Error(navigation_error(status.0, http_status)),
+                    BrowserEvent::Error(
+                        route
+                            .as_ref()
+                            .and_then(|route| route.certificate_error())
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| navigation_error(status.0, http_status)),
+                    ),
                 ));
             }
         }

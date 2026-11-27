@@ -54,6 +54,7 @@ tags!(Source { Bridge => "bridge", WebView => "webview", PoolTest => "pool_draft
 tags!(Binding { Direct => "direct", Legacy => "legacy", Pool => "pool" });
 tags!(RoutePath {
     FixedTlsBridge => "fixed_tls_bridge",
+    ManagedCore => "mihomo_fixed_outbound",
     ShadowsocksBridge => "shadowsocks_aead_bridge",
     SystemHttpBridge => "system_http_bridge", SystemHttpsBridge => "system_https_bridge", SystemSocks5Bridge => "system_socks5_bridge",
     NativeHttp => "native_http", NativeHttps => "native_https", NativeSocks5 => "native_socks5",

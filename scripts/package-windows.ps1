@@ -20,6 +20,13 @@ $scratch = Join-Path $tempRoot ('muse-package-' + [guid]::NewGuid().ToString('N'
 $staging = Join-Path $scratch $name
 $null = New-Item -ItemType Directory -Path $staging -Force
 try {
+    $coreDirectory = Join-Path $repo 'target/muse-kernel'
+    & (Join-Path $repo 'kernel/build.ps1') -OutputDirectory $coreDirectory
+    Copy-Item -LiteralPath (Join-Path $coreDirectory 'mihomo.exe') -Destination (Join-Path $staging 'mihomo.exe')
+    $sourceDirectory = [IO.Directory]::CreateDirectory((Join-Path $staging 'kernel')).FullName
+    foreach ($file in @('README.md', 'build.ps1', 'mihomo-source.zip', 'changes.patch')) {
+        Copy-Item -LiteralPath (Join-Path $repo "kernel/$file") -Destination (Join-Path $sourceDirectory $file)
+    }
     Copy-Item -LiteralPath $BinaryPath -Destination (Join-Path $staging 'Muse.exe')
     foreach ($file in @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md')) {
         Copy-Item -LiteralPath (Join-Path $repo $file) -Destination (Join-Path $staging $file)
@@ -35,12 +42,22 @@ Account profiles and generated media are stored under
 %LOCALAPPDATA%\MuseDesktopNext by default. The --data-dir argument selects an
 existing data directory. Do not delete your data directory when upgrading.
 
-This archive contains application files and license notices only. It does not
-contain account data, cookies, proxy credentials or a signing key.
+从 v0.1.10 升级：旧版应用内更新不能安装此完整包。退出旧版，将整个 ZIP
+解压到新的程序目录，再运行 Muse.exe。不要只复制 Muse.exe，也不要移动或删除
+原数据目录；若原来指定了 --data-dir，传入原资料目录的绝对路径，保留原有的
+其他自选启动参数。备份原数据后操作。
+
+Bundled modified Mihomo is for account routing. No Windows system TUN driver
+is included or supported. See kernel/README.md for sources and rebuilding.
+No account data, cookies, proxy credentials or signing key is distributed.
 "@
     [IO.File]::WriteAllText((Join-Path $staging 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
     $zip = Join-Path $output ($name + '.zip')
     Compress-Archive -LiteralPath $staging -DestinationPath $zip -Force
+    $scanner = Join-Path $PSScriptRoot 'check-driver-free.py'
+    if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 -B $scanner $zip }
+    else { & python -B $scanner $zip }
+    if ($LASTEXITCODE -ne 0) { throw 'Portable ZIP failed the driver-free audit.' }
     $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText(($zip + '.sha256'), "$hash  $name.zip`n", [Text.UTF8Encoding]::new($false))
     Write-Output $zip

@@ -15,6 +15,7 @@ pub enum ThemeMode {
 #[serde(default)]
 pub struct DisplayPreferences {
     pub theme: ThemeMode,
+    pub follow_system_theme: bool,
     page_zoom: f64,
 }
 
@@ -22,6 +23,7 @@ impl Default for DisplayPreferences {
     fn default() -> Self {
         Self {
             theme: ThemeMode::Light,
+            follow_system_theme: false,
             page_zoom: 1.0,
         }
     }

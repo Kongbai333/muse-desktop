@@ -1,24 +1,16 @@
-use crate::secrets::ProtectedStore;
-use base64::{
-    Engine,
-    engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
-};
+use crate::{mihomo, secrets::ProtectedStore};
 use muse_core::{AccountId, AccountNetwork, ProxySubscription, SubscriptionNode, Workspace};
 use serde::{Deserialize, Serialize};
-use serde_yaml_ng::Value;
+use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
-    io::Read,
     path::Path,
-    time::Duration,
 };
-use url::Url;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-const LIMIT: usize = 1024 * 1024;
-const MAX_NODES: usize = 1000;
-mod modern;
+#[cfg(test)]
+mod tests;
 
 #[derive(Serialize, Deserialize)]
 struct PrivateData {
@@ -28,11 +20,45 @@ struct PrivateData {
     reasons: HashMap<Uuid, String>,
 }
 
+#[derive(Deserialize)]
 pub struct Entry {
-    reason: Option<&'static str>,
     label: String,
-    protocol: &'static str,
-    endpoint: Option<Zeroizing<String>>,
+    kind: String,
+    node: Option<Value>,
+    reason: Option<Restriction>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Restriction {
+    NativeParse,
+    OtherEgress,
+    NotRemote,
+    LocalResource,
+    TrustModel,
+    Tunnel,
+    Transport,
+    ActiveProbe,
+    UnknownOption,
+    #[serde(other)]
+    Unknown,
+}
+
+impl Restriction {
+    fn message(&self) -> &'static str {
+        match self {
+            Self::NativeParse => "内核无法解析此配置；请检查节点参数或协议",
+            Self::OtherEgress => "指定了其他出口或接口；请改用固定端点",
+            Self::NotRemote => "本地路由动作不能作为账号出口",
+            Self::LocalResource => "引用了证书或私钥资源；请改用系统信任链",
+            Self::TrustModel => "不能保证标准证书验证；请改用系统信任链",
+            Self::Tunnel => "不能确认隧道的唯一对端；请改用固定端点",
+            Self::Transport => "此传输未确认可安全隔离；请更换传输设置",
+            Self::ActiveProbe => "节点会主动发起连接；请关闭预连接或探测",
+            Self::UnknownOption => "内核未识别非空参数；请核对订阅选项",
+            Self::Unknown => "无法确认隔离条件；请核对节点配置",
+        }
+    }
 }
 
 fn private(root: &Path, sub: &ProxySubscription) -> Result<PrivateData, String> {
@@ -59,259 +85,98 @@ pub fn source(root: &Path, sub: &ProxySubscription) -> Result<Zeroizing<String>,
 }
 
 pub fn fetch(source: &str) -> Result<Vec<Entry>, String> {
-    let url = Url::parse(source).map_err(|_| "订阅地址无效")?;
-    let loopback = url.scheme() == "http"
+    let url = url::Url::parse(source).map_err(|_| "订阅地址无效")?;
+    let local = url.scheme() == "http"
         && url.host_str().is_some_and(|host| {
             host.trim_matches(['[', ']'])
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|ip| ip.is_loopback())
         });
     if source.len() > 8192
-        || (url.scheme() != "https" && !loopback)
+        || !(local || url.scheme() == "https")
         || url.host().is_none()
         || !url[url::Position::BeforeUsername..url::Position::BeforeHost].is_empty()
         || url.fragment().is_some()
     {
         return Err(
-            "订阅须使用 HTTPS（数字回环地址可使用 HTTP），不支持 URL 用户名或重定向".into(),
+            "订阅须使用 HTTPS（数字回环可用 HTTP）；不支持 URL 用户名、片段或重定向".into(),
         );
     }
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .proxy(None)
-        .max_redirects(0)
-        .timeout_global(Some(Duration::from_secs(20)))
-        .build()
-        .into();
-    let response = agent
-        .get(url.as_str())
-        .call()
-        .map_err(|_| "订阅下载失败；已保留上次节点")?;
-    if !response.status().is_success() {
-        return Err("订阅响应失败或重定向；已保留上次节点".into());
+    let data = mihomo::provider(url.as_str())?;
+    let mut entries: Vec<Entry> =
+        serde_json::from_slice(&data).map_err(|_| "无法读取 Mihomo 节点列表")?;
+    if entries.is_empty() || entries.len() > 1000 {
+        return Err("Mihomo 节点列表超出范围".into());
     }
-    let mut bytes = Zeroizing::new(Vec::new());
-    response
-        .into_body()
-        .into_reader()
-        .take((LIMIT + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "订阅读取失败")?;
-    if bytes.len() > LIMIT {
-        return Err("订阅超过 1 MiB".into());
-    }
-    parse(std::str::from_utf8(&bytes).map_err(|_| "订阅不是 UTF-8")?)
-}
-
-fn decode(value: &str) -> Option<String> {
-    [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD]
-        .iter()
-        .find_map(|engine| {
-            engine
-                .decode(value)
-                .ok()
-                .and_then(|bytes| String::from_utf8(bytes).ok())
-        })
-}
-fn label(value: &str) -> String {
-    let value = value.trim();
-    if value.is_empty() || value.chars().any(char::is_control) || value.contains("://") {
-        return "未命名节点".into();
-    }
-    value.chars().take(96).collect()
-}
-fn protocol(value: &str) -> &'static str {
-    match value {
-        "ss" => "ss",
-        "http" => "http",
-        "https" => "https",
-        "socks" | "socks5" | "socks5h" => "socks5",
-        "vmess" => "vmess",
-        "vless" => "vless",
-        "trojan" => "trojan",
-        "hysteria2" | "hy2" => "hysteria2",
-        _ => "未知协议",
-    }
-}
-fn encoded(value: &str) -> String {
-    percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
-}
-fn unescape(value: &str) -> Option<String> {
-    percent_encoding::percent_decode_str(value)
-        .decode_utf8()
-        .ok()
-        .map(|s| s.into_owned())
-}
-
-fn endpoint(
-    kind: &str,
-    host: &str,
-    port: u16,
-    user: &str,
-    secret: &str,
-) -> Option<Zeroizing<String>> {
-    if port == 0
-        || host.is_empty()
-        || host
-            .chars()
-            .any(|ch| ch.is_control() || ch.is_whitespace() || "@/?#%\\".contains(ch))
-        || (user.is_empty() && !secret.is_empty())
-    {
-        return None;
-    }
-    let host = if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::Ipv6Addr>() {
-        format!("[{ip}]")
-    } else {
-        url::Host::parse(host).ok()?.to_string()
-    };
-    let auth = if user.is_empty() {
-        String::new()
-    } else {
-        format!("{}:{}@", encoded(user), encoded(secret))
-    };
-    let value = Zeroizing::new(format!("{kind}://{auth}{host}:{port}/"));
-    muse_proxy::Upstream::parse(&value).ok()?;
-    Some(value)
-}
-
-fn share(line: &str) -> Entry {
-    let (uri, fragment) = line.split_once('#').unwrap_or((line, ""));
-    let (scheme, body) = uri.split_once("://").unwrap_or(("", ""));
-    let kind = protocol(scheme);
-    if modern::supports(kind) {
-        return modern::share(kind, uri, fragment);
-    }
-    let route = (|| {
-        if uri.len() > 16384 || uri.contains('?') || uri.chars().any(char::is_control) {
-            return None;
+    for entry in &mut entries {
+        if entry.label.is_empty()
+            || entry.label.contains("://")
+            || entry.label.chars().any(char::is_control)
+            || entry.label.chars().count() > 96
+        {
+            entry.label = "未命名节点".into();
         }
-        if kind == "ss" {
-            let legacy;
-            let (auth, addr) = if let Some(parts) = body.rsplit_once('@') {
-                parts
-            } else {
-                legacy = decode(body)?;
-                legacy.rsplit_once('@')?
-            };
-            let auth = if auth.contains(':') {
-                unescape(auth)?
-            } else {
-                decode(&unescape(auth)?)?
-            };
-            let (cipher, secret) = auth.split_once(':')?;
-            let addr = Url::parse(&format!("ss://{addr}")).ok()?;
-            if addr.query().is_some()
-                || !matches!(addr.path(), "" | "/")
-                || !addr.username().is_empty()
-                || addr.fragment().is_some()
-            {
-                return None;
-            }
-            endpoint(kind, addr.host_str()?, addr.port()?, cipher, secret)
-        } else if matches!(kind, "https" | "http" | "socks5") {
-            let proxy = muse_proxy::Upstream::parse(uri).ok()?;
-            let (user, secret) = proxy.credentials().unwrap_or(("", ""));
-            endpoint(kind, proxy.host(), proxy.port(), user, secret)
+        if entry.kind.is_empty() {
+            entry.kind = "未知协议".into();
+        }
+        if entry.node.is_some() == entry.reason.is_some() {
+            return Err("Mihomo 节点状态不一致".into());
+        }
+    }
+    Ok(entries)
+}
+
+fn encoded(mut node: Value) -> Zeroizing<String> {
+    node["skip-cert-verify"] = Value::Bool(false);
+    node.sort_all_objects();
+    Zeroizing::new(format!("{}{node}", mihomo::NATIVE))
+}
+
+#[derive(Default)]
+struct LegacyMatches {
+    keys: HashMap<String, Uuid>,
+    ambiguous: HashSet<Uuid>,
+    seen: HashSet<Uuid>,
+}
+
+impl LegacyMatches {
+    fn record(&mut self, key: String, id: Uuid) {
+        if let Some(other) = self.keys.insert(key, id) {
+            self.ambiguous.extend([other, id]);
+        }
+    }
+
+    fn add(&mut self, stored: &str, config: Value, id: Uuid) {
+        let default = if stored.starts_with("ss://") {
+            Some("udp")
+        } else if stored.starts_with("http://") {
+            Some("tls")
         } else {
             None
-        }
-    })();
-    Entry {
-        reason: None,
-        label: label(&unescape(fragment).unwrap_or_default()),
-        protocol: kind,
-        endpoint: route,
-    }
-}
-
-fn clash(value: &Value) -> Entry {
-    let kind = protocol(value.get("type").and_then(Value::as_str).unwrap_or(""));
-    let mut kind = kind;
-    if modern::supports(kind) {
-        return modern::clash(kind, value);
-    }
-    let route = (|| {
-        let map = value.as_mapping()?;
-        for (key, value) in map {
-            match key.as_str()? {
-                "name" | "type" | "server" | "port" => (),
-                "udp" if value.is_bool() => (),
-                "network" if value.as_str() == Some("tcp") => (),
-                "cipher" if kind == "ss" => (),
-                "password" => (),
-                "username" if kind != "ss" => (),
-                "tls" if kind == "http" && value.is_bool() => (),
-                "skip-cert-verify" if value.as_bool() == Some(false) => (),
-                _ => return None,
-            }
-        }
-        if kind == "http" && value.get("tls").and_then(Value::as_bool) == Some(true) {
-            kind = "https";
-        }
-        let string = |key: &str| -> Option<&str> {
-            match value.get(key) {
-                Some(field) => field.as_str(),
-                None => Some(""),
-            }
         };
-        endpoint(
-            kind,
-            string("server")?,
-            value.get("port")?.as_u64()?.try_into().ok()?,
-            string(if kind == "ss" { "cipher" } else { "username" })?,
-            string("password")?,
-        )
-    })();
-    Entry {
-        reason: None,
-        label: label(value.get("name").and_then(Value::as_str).unwrap_or("")),
-        protocol: kind,
-        endpoint: route,
+        if let Some(field) = default.filter(|field| config.get(*field).is_none()) {
+            let mut explicit = config.clone();
+            explicit[field] = Value::Bool(false);
+            self.record(encoded(explicit).to_string(), id);
+        }
+        self.record(encoded(config).to_string(), id);
     }
-}
 
-fn parse(text: &str) -> Result<Vec<Entry>, String> {
-    let text = text.trim_start_matches('\u{feff}').trim();
-    #[derive(Deserialize)]
-    struct Clash {
-        proxies: Vec<Value>,
-    }
-    if let Ok(doc) = serde_yaml_ng::from_str::<Clash>(text) {
-        if doc.proxies.len() > MAX_NODES {
-            return Err("订阅超过 1000 个节点".into());
+    fn conflicts_with_native(&mut self, key: &str) -> bool {
+        if let Some(id) = self.keys.get(key) {
+            self.ambiguous.insert(*id);
+            return true;
         }
-        return Ok(doc.proxies.iter().map(clash).collect());
+        false
     }
-    let decoded;
-    let text = if text.contains("://") {
-        text
-    } else {
-        decoded = Zeroizing::new(
-            decode(&text.split_ascii_whitespace().collect::<String>())
-                .ok_or("无法解析订阅；保留上次节点")?,
-        );
-        decoded.as_str()
-    };
-    let mut entries = Vec::new();
-    for line in text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-    {
-        if !line.split_once("://").is_some_and(|(kind, _)| {
-            kind.len() <= 20
-                && !kind.is_empty()
-                && kind.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        }) {
-            return Err("无法解析节点列表；保留上次节点".into());
+
+    fn candidate(&mut self, key: &str) -> Option<Uuid> {
+        let id = *self.keys.get(key)?;
+        if !self.seen.insert(id) {
+            self.ambiguous.insert(id);
         }
-        if entries.len() >= MAX_NODES {
-            return Err("订阅超过 1000 个节点".into());
-        }
-        entries.push(share(line));
+        Some(id)
     }
-    (!entries.is_empty())
-        .then_some(entries)
-        .ok_or_else(|| "无法识别订阅内容；保留上次节点".into())
 }
 
 pub fn replace(
@@ -342,70 +207,121 @@ pub fn replace(
         return Err("最多保存 64 个订阅".into());
     }
     let store = ProtectedStore::new(root);
-    let mut known = HashMap::new();
-    let mut discard = Vec::new();
+    let mut old_groups: HashMap<String, Vec<(Uuid, Uuid, String)>> = HashMap::new();
+    let mut legacy = LegacyMatches::default();
+    let mut retired = Vec::new();
     if let Some(old) = old {
-        discard.push((old.id, old.revision));
+        let saved = private(root, old)?;
+        if saved.url != url {
+            return Err("订阅来源已改变；请作为新订阅添加".into());
+        }
+        let mut labels = saved.labels;
+        retired.push((old.id, old.revision));
         for node in &old.nodes {
-            if let Some(revision) = node.revision {
-                let value = store.load_selected(node.id, Some(revision))?;
-                known.insert(value.to_string(), (node.id, revision));
+            if let Some(rev) = node.revision {
+                let stored = store.load_selected(node.id, Some(rev))?;
+                retired.push((node.id, rev));
+                if let Ok(config) = mihomo::snapshot(&stored) {
+                    if !stored.starts_with(mihomo::NATIVE) {
+                        legacy.add(&stored, config, node.id);
+                        continue;
+                    }
+                    old_groups
+                        .entry(encoded(config).to_string())
+                        .or_default()
+                        .push((node.id, rev, labels.remove(&node.id).unwrap_or_default()));
+                }
             }
         }
     }
+    old_groups.retain(|key, _| !legacy.conflicts_with_native(key));
+    let mut counts = HashMap::new();
+    let mut label_counts = HashMap::new();
+    let entries: Vec<_> = entries
+        .into_iter()
+        .map(|entry| {
+            let value = entry.node.map(encoded);
+            let legacy_id = value.as_ref().and_then(|key| legacy.candidate(key));
+            if let Some(value) = &value {
+                *counts.entry(value.to_string()).or_insert(0usize) += 1;
+                *label_counts
+                    .entry((value.to_string(), entry.label.clone()))
+                    .or_insert(0usize) += 1;
+            }
+            (entry.label, entry.kind, value, entry.reason, legacy_id)
+        })
+        .collect();
     let mut sub = ProxySubscription {
         id: existing.unwrap_or_else(Uuid::new_v4),
         revision: Uuid::new_v4(),
         name: name.trim().into(),
         nodes: Vec::new(),
     };
+    let mut data = PrivateData {
+        url: url.into(),
+        labels: HashMap::new(),
+        reasons: HashMap::new(),
+    };
     let mut staged = Vec::new();
-    let mut labels = HashMap::new();
-    let mut reasons = HashMap::new();
-    let mut seen = HashSet::new();
+    let mut kept = HashSet::new();
+    let joined: HashSet<_> = old
+        .into_iter()
+        .flat_map(|sub| &sub.nodes)
+        .filter(|node| node.selectable())
+        .map(|node| node.id)
+        .collect();
     let result = (|| {
-        for entry in entries {
-            let (id, revision) = if let Some(value) = entry.endpoint {
-                if !seen.insert(value.to_string()) {
-                    continue;
+        for (label, kind, value, restriction, legacy_id) in entries {
+            let mut id = Uuid::new_v4();
+            let mut revision = None;
+            let reason = restriction.map(|category| category.message().to_owned());
+            if let Some(value) = value {
+                if value.len() > 256 * 1024 {
+                    return Err("单个节点超过安全存储上限".into());
                 }
-                let (id, rev) = if let Some(pair) = known.remove(value.as_str()) {
-                    pair
-                } else {
-                    let pair = (Uuid::new_v4(), Uuid::new_v4());
-                    store.save_revision(pair.0, pair.1, &value)?;
-                    staged.push(pair);
-                    pair
-                };
-                (id, Some(rev))
-            } else {
-                (Uuid::new_v4(), None)
-            };
-            labels.insert(id, entry.label.clone());
-            let reason = entry.reason.map(str::to_owned);
+                let previous = old_groups.get(value.as_str()).and_then(|group| {
+                    if group.len() == 1 && counts[value.as_str()] == 1 {
+                        return group.first();
+                    }
+                    if label_counts[&(value.to_string(), label.clone())] != 1 {
+                        return None;
+                    }
+                    let mut matched = group.iter().filter(|row| row.2 == label);
+                    let first = matched.next()?;
+                    matched.next().is_none().then_some(first)
+                });
+                if let Some((old_id, old_rev, _)) = previous {
+                    id = *old_id;
+                    revision = Some(*old_rev);
+                    kept.insert((id, *old_rev));
+                } else if let Some(old_id) = legacy_id.filter(|id| !legacy.ambiguous.contains(id)) {
+                    id = old_id;
+                }
+                if revision.is_none() {
+                    let rev = Uuid::new_v4();
+                    store.save_revision(id, rev, &value)?;
+                    staged.push((id, rev));
+                    revision = Some(rev);
+                }
+            }
+            data.labels.insert(id, label.clone());
             if let Some(reason) = &reason {
-                reasons.insert(id, reason.clone());
+                data.reasons.insert(id, reason.clone());
             }
             sub.nodes.push(SubscriptionNode {
-                reason,
+                in_pool: Some(joined.contains(&id)),
                 id,
                 revision,
-                name: entry.label,
-                protocol: entry.protocol.into(),
+                name: label,
+                protocol: kind,
+                reason,
             });
         }
-        let secret = Zeroizing::new(
-            serde_json::to_string(&PrivateData {
-                url: url.to_owned(),
-                labels,
-                reasons,
-            })
-            .map_err(|_| "订阅保存失败")?,
-        );
+        let secret = Zeroizing::new(serde_json::to_string(&data).map_err(|_| "订阅保存失败")?);
         store.save_protected(sub.id, Some(sub.revision), &secret)?;
         staged.push((sub.id, sub.revision));
-        discard.extend(known.into_values());
-        commit(root, workspace, existing, Some(sub), &discard)
+        retired.retain(|pair| !kept.contains(pair));
+        commit(root, workspace, existing, Some(sub), &retired)
     })();
     if result.is_err() {
         for (id, rev) in staged {

@@ -375,8 +375,7 @@ impl MuseWindow {
             .filter(|account| self.browsers.account_running(account.id))
             .count();
         let header_button = |id: &'static str, icon: &'static str, hint: &'static str| {
-            div()
-                .id(id)
+            super::chrome::keyboard_control(div().id(id))
                 .size(px(28.))
                 .rounded_md()
                 .flex_none()
@@ -390,6 +389,9 @@ impl MuseWindow {
         };
         let header = div()
             .h(px(54.))
+            .bg(rgb(colors().surface))
+            .border_b_1()
+            .border_color(rgb(colors().line))
             .flex_none()
             .px(px(inset.min(28.)))
             .flex()
@@ -442,7 +444,7 @@ impl MuseWindow {
                     .text_size(px(12.))
                     .text_color(rgb(colors().secondary))
                     .child(format!(
-                        "{running} / {} 个账号在线",
+                        "已启动 {running} / {} 个账号",
                         self.workspace.accounts.len()
                     )),
             )
@@ -472,30 +474,26 @@ impl MuseWindow {
                 .px(px(6.))
                 .child(
                     div()
-                        .text_size(px(30.))
+                        .text_size(px(24.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(colors().text))
-                        .child("从一个想法开始"),
+                        .child("创作工作室"),
                 )
                 .child(
                     div()
                         .mt(px(12.))
                         .text_size(px(14.))
                         .text_color(rgb(colors().secondary))
-                        .child(
-                            "描述画面，或者先从下面任选一句改起。每个会话使用独立的 Muse 对话。",
-                        ),
+                        .child("提示词示例"),
                 )
                 .child(div().h(px(24.)))
                 .children(STARTERS.iter().enumerate().map(|(index, &(kind, text))| {
                     div()
                         .id(SharedString::from(format!("studio-starter-{index}")))
-                        .mt(px(if index == 0 { 0. } else { 8. }))
-                        .px(px(14.))
+                        .px(px(6.))
                         .py(px(13.))
-                        .rounded(px(14.))
-                        .border_1()
-                        .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+                        .border_t_1()
+                        .border_color(rgb(colors().line))
                         .flex()
                         .items_start()
                         .cursor_pointer()

@@ -1,0 +1,1438 @@
+diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -15,6 +15,7 @@
+ 	"strings"
+ 	"syscall"
+ 
++	proxyProvider "github.com/metacubex/mihomo/adapter/provider"
+ 	"github.com/metacubex/mihomo/common/cmd"
+ 	"github.com/metacubex/mihomo/component/age"
+ 	"github.com/metacubex/mihomo/component/generator"
+@@ -27,6 +28,8 @@
+ 	"github.com/metacubex/mihomo/hub/executor"
+ 	"github.com/metacubex/mihomo/log"
+ 	"github.com/metacubex/mihomo/rules/provider"
++	"github.com/metacubex/mihomo/tunnel"
++	logrus "github.com/sirupsen/logrus"
+ 
+ 	"go.uber.org/automaxprocs/maxprocs"
+ )
+@@ -78,6 +81,17 @@
+ }
+ 
+ func main() {
++	if len(os.Args) == 2 && os.Args[1] == "muse-provider" {
++		logrus.SetOutput(io.Discard)
++		if proxyProvider.MuseRead(os.Stdin, os.Stdout) != nil {
++			os.Exit(1)
++		}
++		return
++	}
++	if os.Getenv("MUSE_FIXED_ACCOUNT") == "1" {
++		logrus.SetOutput(io.Discard)
++		tunnel.MuseCertificateEvents = true
++	}
+ 	// Defensive programming: panic when code mistakenly calls net.DefaultResolver
+ 	net.DefaultResolver.PreferGo = true
+ 	net.DefaultResolver.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+diff --git a/adapter/parser.go b/adapter/parser.go
+--- a/adapter/parser.go
++++ b/adapter/parser.go
+@@ -9,13 +9,16 @@
+ )
+ 
+ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {
+-	decoder := structure.NewDecoder(structure.Option{TagName: "proxy", WeaklyTypedInput: true, KeyReplacer: structure.DefaultKeyReplacer})
+ 	proxyType, existType := mapping["type"].(string)
+ 	if !existType {
+ 		return nil, fmt.Errorf("missing type")
+ 	}
+ 
+ 	opt := applyProxyOptions(options...)
++	decoder := opt.Decoder
++	if decoder == nil {
++		decoder = NewProxyDecoder(nil)
++	}
+ 	basicOption := outbound.BasicOption{
+ 		DialerForAPI: opt.DialerForAPI,
+ 		TunnelForAPI: opt.TunnelForAPI,
+@@ -250,6 +253,7 @@
+ }
+ 
+ type proxyOption struct {
++	Decoder      ProxyDecoder
+ 	DialerForAPI C.Dialer
+ 	TunnelForAPI C.Tunnel
+ 	ProviderName string
+@@ -265,6 +269,18 @@
+ 
+ type ProxyOption func(opt *proxyOption)
+ 
++type ProxyDecoder interface {
++	Decode(map[string]any, any) error
++}
++
++func NewProxyDecoder(unused func(any) error) ProxyDecoder {
++	return structure.NewDecoder(structure.Option{TagName: "proxy", WeaklyTypedInput: true, KeyReplacer: structure.DefaultKeyReplacer, Unused: unused})
++}
++
++func WithProxyDecoder(decoder ProxyDecoder) ProxyOption {
++	return func(opt *proxyOption) { opt.Decoder = decoder }
++}
++
+ func WithDialerForAPI(dialer C.Dialer) ProxyOption {
+ 	return func(opt *proxyOption) {
+ 		opt.DialerForAPI = dialer
+diff --git a/adapter/outbound/shadowsocks.go b/adapter/outbound/shadowsocks.go
+--- a/adapter/outbound/shadowsocks.go
++++ b/adapter/outbound/shadowsocks.go
+@@ -58,6 +58,10 @@
+ type simpleObfsOption struct {
+ 	Mode string `obfs:"mode,omitempty"`
+ 	Host string `obfs:"host,omitempty"`
++}
++
++func MuseCheckSimpleObfs(values map[string]any, unused func(any) error) error {
++	return structure.NewDecoder(structure.Option{TagName: "obfs", WeaklyTypedInput: true, Unused: unused}).Decode(values, &simpleObfsOption{})
+ }
+ 
+ type v2rayObfsOption struct {
+diff --git a/adapter/provider/parser.go b/adapter/provider/parser.go
+--- a/adapter/provider/parser.go
++++ b/adapter/provider/parser.go
+@@ -92,6 +92,9 @@
+ 			}
+ 		}
+ 		vehicle = resource.NewHTTPVehicle(schema.URL, path, schema.Proxy, schema.Header, resource.DefaultHttpTimeout, schema.SizeLimit)
++		if museRows != nil {
++			vehicle = resource.NewHTTPVehicle(schema.URL, "", "", schema.Header, resource.DefaultHttpTimeout, schema.SizeLimit)
++		}
+ 	case "inline":
+ 		return NewInlineProvider(name, schema.Payload, parser, hc)
+ 	default:
+diff --git a/adapter/provider/provider.go b/adapter/provider/provider.go
+--- a/adapter/provider/provider.go
++++ b/adapter/provider/provider.go
+@@ -207,7 +207,7 @@
+ 
+ 	fetcher := resource.NewFetcher[[]C.Proxy](name, interval, vehicle, nil, parser, pd.setProxies)
+ 	pd.Fetcher = fetcher
+-	if httpVehicle, ok := vehicle.(*resource.HTTPVehicle); ok {
++	if httpVehicle, ok := vehicle.(*resource.HTTPVehicle); ok && museRows == nil {
+ 		httpVehicle.SetInRead(func(resp *http.Response) {
+ 			if subscriptionInfo := resp.Header.Get("subscription-userinfo"); subscriptionInfo != "" {
+ 				cachefile.Cache().SetSubscriptionInfo(name, subscriptionInfo)
+@@ -373,6 +373,9 @@
+ 	}
+ 
+ 	return func(buf []byte) ([]C.Proxy, error) {
++		if museRows != nil && len(buf) > 1<<20 {
++			return nil, errMuse
++		}
+ 		schema := &ProxySchema{}
+ 
+ 		// decrypt config
+@@ -387,6 +390,9 @@
+ 				return nil, fmt.Errorf("%w, %w", err, err1)
+ 			}
+ 			schema.Proxies = proxies
++			if museRows != nil && len(strings.FieldsFunc(strings.TrimSpace(string(convert.DecodeBase64(buf))), func(char rune) bool { return char == '\n' })) != len(proxies) {
++				return nil, errMuse
++			}
+ 		}
+ 
+ 		if schema.Proxies == nil {
+@@ -394,10 +400,30 @@
+ 		}
+ 
+ 		proxies := []C.Proxy{}
++		if museRows != nil && len(schema.Proxies) > 1000 {
++			return nil, errMuse
++		}
+ 		proxiesSet := map[string]struct{}{}
+ 		for _, filterReg := range filterRegs {
+ 		LOOP1:
+ 			for idx, mapping := range schema.Proxies {
++				var row museRow
++				options := []adapter.ProxyOption{adapter.WithTunnelForAPI(tunnel), adapter.WithProviderName(pdName)}
++				if museRows != nil {
++					row.Label, _ = mapping["name"].(string)
++					if mapping == nil {
++						row.Reason = "native_parse"
++						*museRows = append(*museRows, row)
++						continue
++					}
++					mapping["name"] = fmt.Sprintf("muse-%d", idx)
++					for key := range mapping {
++						if strings.EqualFold(strings.ReplaceAll(key, "_", "-"), "skip-cert-verify") {
++							delete(mapping, key)
++						}
++					}
++					options = append(options, adapter.WithProxyDecoder(&row))
++				}
+ 				if len(excludeTypeArray) > 0 {
+ 					mType, ok := mapping["type"]
+ 					if !ok {
+@@ -446,17 +472,28 @@
+ 					return nil, fmt.Errorf("proxy %d override error: %w", idx, err)
+ 				}
+ 
+-				proxy, err := adapter.ParseProxy(mapping, adapter.WithTunnelForAPI(tunnel), adapter.WithProviderName(pdName))
++				proxy, err := adapter.ParseProxy(mapping, options...)
+ 				if err != nil {
++					if museRows != nil {
++						if row.Reason == "" {
++							row.Reason = "native_parse"
++						}
++						*museRows = append(*museRows, row)
++						continue
++					}
+ 					return nil, fmt.Errorf("proxy %d error: %w", idx, err)
+ 				}
+ 
+ 				proxiesSet[name] = struct{}{}
+ 				proxies = append(proxies, proxy)
+-			}
+-		}
+-
+-		if len(proxies) == 0 {
++				if museRows != nil {
++					row.Node = mapping
++					*museRows = append(*museRows, row)
++				}
++			}
++		}
++
++		if len(proxies) == 0 && (museRows == nil || len(*museRows) == 0) {
+ 			if len(filter) > 0 {
+ 				return nil, errors.New("doesn't match any proxy, please check your filter")
+ 			}
+diff --git a/adapter/provider/muse.go b/adapter/provider/muse.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/provider/muse.go
+@@ -0,0 +1,214 @@
++package provider
++
++import (
++	"encoding/json"
++	"errors"
++	"golang.org/x/net/http/httpguts"
++	"io"
++	"maps"
++	"net"
++	"net/url"
++	"reflect"
++	"strings"
++
++	"github.com/metacubex/mihomo/adapter"
++	"github.com/metacubex/mihomo/adapter/outbound"
++)
++
++type museRow struct {
++	Label  string         `json:"label"`
++	Kind   string         `json:"kind"`
++	Reason string         `json:"reason,omitempty"`
++	Node   map[string]any `json:"node,omitempty"`
++}
++
++var museRows *[]museRow
++var errMuse = errors.New("invalid provider snapshot")
++
++func MuseAccountPolicy() adapter.ProxyOption { return adapter.WithProxyDecoder(&museRow{}) }
++
++func MuseRead(input io.Reader, output io.Writer) error {
++	var source string
++	if json.NewDecoder(io.LimitReader(input, 16384)).Decode(&source) != nil {
++		return errMuse
++	}
++	endpoint, err := url.Parse(source)
++	if err != nil || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.Fragment != "" || !(endpoint.Scheme == "https" || endpoint.Scheme == "http" && net.ParseIP(endpoint.Hostname()).IsLoopback()) {
++		return errMuse
++	}
++	rows := []museRow{}
++	museRows = &rows
++	feed, err := ParseProxyProvider("muse", map[string]any{"type": "http", "url": source, "size-limit": (1 << 20) + 1, "header": map[string][]string{"User-Agent": {"Mihomo/v1.19.34-Muse-0.1.11"}}, "override": map[string]any{"skip-cert-verify": false}}, nil)
++	if err != nil {
++		return err
++	}
++	defer feed.(*ProxySetProvider).Close()
++	if err = feed.Update(); err != nil {
++		return err
++	}
++	proxies := feed.Proxies()
++	count := 0
++	for _, row := range rows {
++		if row.Node != nil {
++			if row.Reason != "" || count >= len(proxies) || proxies[count].Name() != row.Node["name"] {
++				return errMuse
++			}
++			row.Node["name"] = "account"
++			count++
++		}
++	}
++	if len(rows) == 0 || count != len(proxies) {
++		return errMuse
++	}
++	return json.NewEncoder(output).Encode(rows)
++}
++
++func (row *museRow) reject(category string) error {
++	row.Reason = category
++	return errMuse
++}
++
++func (row *museRow) unused(value any) error {
++	switch v := value.(type) {
++	case nil:
++		return nil
++	case string:
++		if v == "" {
++			return nil
++		}
++	case bool:
++		if !v {
++			return nil
++		}
++	case map[string]any:
++		if len(v) == 0 {
++			return nil
++		}
++	case []any:
++		if len(v) == 0 {
++			return nil
++		}
++	default:
++		if reflect.ValueOf(v).IsZero() {
++			return nil
++		}
++	}
++	return row.reject("unknown_option")
++}
++
++func (row *museRow) Decode(mapping map[string]any, dst any) error {
++	decoder := adapter.NewProxyDecoder(row.unused)
++	if _, ok := dst.(*outbound.SingMuxOption); ok {
++		return decoder.Decode(mapping, dst)
++	}
++	// ParseProxy selected an actual adapter. Never echo an unrecognized type.
++	row.Kind, _ = mapping["type"].(string)
++	switch row.Kind {
++	case "direct", "rematch", "reject", "dns":
++		return row.reject("not_remote")
++	case "wireguard", "openvpn", "tailscale", "zerotier", "easytier":
++		return row.reject("tunnel")
++	case "masque", "shadowquic", "ssh":
++		return row.reject("trust_model")
++	}
++	fields := maps.Clone(mapping)
++	delete(fields, "type")
++	if mux, exists := fields["smux"]; exists {
++		if _, ok := mux.(map[string]any); !ok && mux != nil {
++			return row.reject("native_parse")
++		}
++		delete(fields, "smux")
++	}
++	if err := decoder.Decode(fields, dst); err != nil {
++		return err
++	}
++	option := reflect.ValueOf(dst).Elem()
++	active := func(names ...string) bool {
++		for _, name := range names {
++			if field := option.FieldByName(name); field.IsValid() && !field.IsZero() {
++				return true
++			}
++		}
++		return false
++	}
++	if active("DialerProxy", "Interface", "RoutingMark", "Ports", "PortRange", "Ip") {
++		return row.reject("other_egress")
++	}
++	if active("Certificate", "PrivateKey") {
++		return row.reject("local_resource")
++	}
++	if active("SkipCertVerify", "DisableSni", "NameCertVerify", "Fingerprint", "ShadowTLSOpts", "RestlsOpts", "JLSOpts") {
++		return row.reject("trust_model")
++	}
++	if field := option.FieldByName("RealityOpts"); field.IsValid() && field.FieldByName("PublicKey").String() != "" {
++		return row.reject("trust_model")
++	}
++	if field := option.FieldByName("RealmOpts"); field.IsValid() && field.FieldByName("Enable").Bool() {
++		return row.reject("other_egress")
++	}
++	if field := option.FieldByName("ECHOpts"); field.IsValid() && field.FieldByName("Enable").Bool() && field.FieldByName("Config").String() == "" {
++		return row.reject("other_egress")
++	}
++	if active("MinIdleSession", "HealthCheck") {
++		return row.reject("active_probe")
++	}
++	switch parsed := dst.(type) {
++	case *outbound.HttpOption:
++		for header, value := range parsed.Headers {
++			if !httpguts.ValidHeaderFieldName(header) || !httpguts.ValidHeaderFieldValue(value) {
++				return row.reject("native_parse")
++			}
++		}
++	case *outbound.ShadowSocksOption:
++		switch parsed.Plugin {
++		case "":
++			if len(parsed.PluginOpts) > 0 {
++				return row.reject("unknown_option")
++			}
++		case "obfs":
++			if err := outbound.MuseCheckSimpleObfs(parsed.PluginOpts, row.unused); err != nil {
++				return err
++			}
++		default:
++			return row.reject("transport")
++		}
++	case *outbound.SnellOption:
++		if len(parsed.ObfsOpts) > 0 {
++			return row.reject("transport")
++		}
++	case *outbound.HysteriaOption:
++		if (parsed.Protocol != "" && parsed.Protocol != "udp") || (parsed.ObfsProtocol != "" && parsed.ObfsProtocol != "udp") {
++			return row.reject("transport")
++		}
++	case *outbound.VmessOption:
++		if parsed.TLSMirrorOpts.PrimaryKey != "" || parsed.Network == "mekya" {
++			return row.reject("transport")
++		}
++	case *outbound.VlessOption:
++		if parsed.Network == "xhttp" && parsed.XHTTPOpts.DownloadSettings != nil {
++			return row.reject("other_egress")
++		}
++	case *outbound.SudokuOption:
++		maskTLS := parsed.HTTPMaskTLS && (parsed.HTTPMask == nil || *parsed.HTTPMask)
++		if parsed.HTTPMaskOptions != nil {
++			maskTLS = parsed.HTTPMaskOptions.TLS && !parsed.HTTPMaskOptions.Disable
++		}
++		if maskTLS {
++			return row.reject("transport")
++		}
++	}
++	host, port := option.FieldByName("Server"), option.FieldByName("Port")
++	if !host.IsValid() || !port.IsValid() || host.Kind() != reflect.String || port.Kind() != reflect.Int {
++		return row.reject("tunnel")
++	}
++	if host.String() == "" || strings.ContainsAny(host.String(), "/\\@?#\x00 \r\n\t") || port.Int() < 1 || port.Int() > 65535 {
++		return row.reject("native_parse")
++	}
++	if mapping["dialer-proxy"] == "" {
++		delete(mapping, "dialer-proxy")
++	}
++	if _, ok := mapping["port"]; ok {
++		mapping["port"] = int(port.Int())
++	}
++	return nil
++}
+diff --git a/common/structure/structure.go b/common/structure/structure.go
+--- a/common/structure/structure.go
++++ b/common/structure/structure.go
+@@ -17,6 +17,7 @@
+ 	TagName          string
+ 	WeaklyTypedInput bool
+ 	KeyReplacer      *strings.Replacer
++	Unused           func(value any) error
+ }
+ 
+ var DefaultKeyReplacer = strings.NewReplacer("_", "-")
+@@ -520,9 +521,14 @@
+ 				}
+ 
+ 				if strings.EqualFold(mK, fieldName) {
++					if d.option.Unused != nil && rawMapVal.IsValid() {
++						return fmt.Errorf("ambiguous field spelling")
++					}
+ 					rawMapKey = dataValKey
+ 					rawMapVal = dataVal.MapIndex(dataValKey)
+-					break
++					if d.option.Unused == nil {
++						break
++					}
+ 				}
+ 			}
+ 
+@@ -580,6 +586,13 @@
+ 		dataValKeysUnused = nil
+ 	}
+ 
++	if d.option.Unused != nil {
++		for key := range dataValKeysUnused {
++			if err := d.option.Unused(dataVal.MapIndex(reflect.ValueOf(key)).Interface()); err != nil {
++				return err
++			}
++		}
++	}
+ 	if len(targetValKeysUnused) > 0 {
+ 		keys := make([]string, 0, len(targetValKeysUnused))
+ 		for rawKey := range targetValKeysUnused {
+diff --git a/config/config.go b/config/config.go
+--- a/config/config.go
++++ b/config/config.go
+@@ -6,7 +6,9 @@
+ 	"net"
+ 	"net/netip"
+ 	"net/url"
++	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"time"
+ 	_ "unsafe"
+@@ -900,7 +902,11 @@
+ 
+ 	// parse proxy
+ 	for idx, mapping := range proxiesConfig {
+-		proxy, err := adapter.ParseProxy(mapping, adapter.WithTunnelForAPI(T.Tunnel))
++		options := []adapter.ProxyOption{adapter.WithTunnelForAPI(T.Tunnel)}
++		if os.Getenv("MUSE_FIXED_ACCOUNT") == "1" {
++			options = append(options, provider.MuseAccountPolicy())
++		}
++		proxy, err := adapter.ParseProxy(mapping, options...)
+ 		if err != nil {
+ 			return nil, nil, fmt.Errorf("proxy %d: %w", idx, err)
+ 		}
+@@ -1685,6 +1691,9 @@
+ }
+ 
+ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
++	if runtime.GOOS == "windows" && rawTun.Enable {
++		return errors.New("Windows system TUN is not supported by this Muse build")
++	}
+ 	tunAddressPrefix := dns.FakeIPRange
+ 	if !tunAddressPrefix.IsValid() {
+ 		tunAddressPrefix = netip.MustParsePrefix("198.18.0.1/16")
+diff --git a/component/resource/vehicle.go b/component/resource/vehicle.go
+--- a/component/resource/vehicle.go
++++ b/component/resource/vehicle.go
+@@ -112,6 +112,9 @@
+ }
+ 
+ func (h *HTTPVehicle) Write(buf []byte) error {
++	if h.path == "" {
++		return nil
++	}
+ 	return safeWrite(h.path, buf)
+ }
+ 
+@@ -136,11 +139,18 @@
+ 			setIfNoneMatch = true
+ 		}
+ 	}
+-	resp, err := mihomoHttp.HttpRequest(ctx, h.url, http.MethodGet, header, nil, mihomoHttp.WithSpecialProxy(h.proxy))
++	options := []mihomoHttp.Option{mihomoHttp.WithSpecialProxy(h.proxy)}
++	if h.path == "" {
++		options = append(options, mihomoHttp.WithoutRedirects())
++	}
++	resp, err := mihomoHttp.HttpRequest(ctx, h.url, http.MethodGet, header, nil, options...)
+ 	if err != nil {
+ 		return
+ 	}
+ 	defer resp.Body.Close()
++	if h.path == "" && (resp.StatusCode != 200 || resp.Header.Get("Content-Range") != "") {
++		return nil, hash, errors.New("incomplete provider response")
++	}
+ 
+ 	if h.inRead != nil {
+ 		h.inRead(resp)
+diff --git a/component/http/http.go b/component/http/http.go
+--- a/component/http/http.go
++++ b/component/http/http.go
+@@ -87,16 +87,22 @@
+ 	}
+ 
+ 	client := http.Client{Transport: transport}
++	if opt.noRedirect {
++		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
++	}
+ 	return client.Do(req)
+ }
+ 
+ type Option func(opt *option)
+ 
+ type option struct {
++	noRedirect   bool
+ 	specialProxy string
+ 	dialer       C.Dialer
+ 	caOption     ca.Option
+ }
++
++func WithoutRedirects() Option { return func(opt *option) { opt.noRedirect = true } }
+ 
+ func WithSpecialProxy(name string) Option {
+ 	return func(opt *option) {
+diff --git a/component/ca/config.go b/component/ca/config.go
+--- a/component/ca/config.go
++++ b/component/ca/config.go
+@@ -114,6 +114,9 @@
+ 			return verifier(state.PeerCertificates, serverName)
+ 		}
+ 		tlsConfig.InsecureSkipVerify = true
++		if os.Getenv("MUSE_FIXED_ACCOUNT") == "1" {
++			tlsConfig.InsecureSkipVerify = false
++		}
+ 	} else if opt.NameCertVerify != "" {
+ 		verifier := NewNameCertVerifier(opt.NameCertVerify, tlsConfig.RootCAs, tlsConfig.Time)
+ 		tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+diff --git a/tunnel/tunnel.go b/tunnel/tunnel.go
+--- a/tunnel/tunnel.go
++++ b/tunnel/tunnel.go
+@@ -2,10 +2,12 @@
+ 
+ import (
+ 	"context"
++	"crypto/x509"
+ 	"errors"
+ 	"fmt"
+ 	"net"
+ 	"net/netip"
++	"os"
+ 	"path/filepath"
+ 	"runtime"
+ 	"strings"
+@@ -611,6 +613,9 @@
+ 		return
+ 	}
+ 	logMetadata(metadata, rule, remoteConn)
++	if MuseCertificateEvents {
++		fmt.Fprintln(os.Stdout, "MUSE_DIAL_OK")
++	}
+ 
+ 	remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, metadata, rule, int64(peekLen), 0, true)
+ 	defer func(remoteConn C.Conn) {
+@@ -625,12 +630,25 @@
+ }
+ 
+ func logMetadataErr(metadata *C.Metadata, rule C.Rule, proxy C.ProxyAdapter, err error) {
++	if MuseCertificateEvents {
++		var host x509.HostnameError
++		var authority x509.UnknownAuthorityError
++		var invalid x509.CertificateInvalidError
++		switch {
++		case errors.As(err, &host):
++			fmt.Fprintln(os.Stdout, "MUSE_TLS_NAME")
++		case errors.As(err, &authority), errors.As(err, &invalid):
++			fmt.Fprintln(os.Stdout, "MUSE_TLS_TRUST")
++		}
++	}
+ 	if rule == nil {
+ 		log.Warnln("[%s] dial %s %s --> %s error: %s", strings.ToUpper(metadata.NetWork.String()), proxy.Name(), metadata.SourceDetail(), metadata.RemoteAddress(), err.Error())
+ 	} else {
+ 		log.Warnln("[%s] dial %s (match %s/%s) %s --> %s error: %s", strings.ToUpper(metadata.NetWork.String()), proxy.Name(), rule.RuleType().String(), rule.Payload(), metadata.SourceDetail(), metadata.RemoteAddress(), err.Error())
+ 	}
+ }
++
++var MuseCertificateEvents bool
+ 
+ func logMetadata(metadata *C.Metadata, rule C.Rule, remoteConn C.Connection) {
+ 	switch {
+diff --git a/listener/sing_tun/server.go b/listener/sing_tun/server.go
+--- a/listener/sing_tun/server.go
++++ b/listener/sing_tun/server.go
+@@ -134,6 +134,9 @@
+ }
+ 
+ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Listener, err error) {
++	if runtime.GOOS == "windows" {
++		return nil, fmt.Errorf("Windows system TUN is not supported by this Muse build")
++	}
+ 	if len(additions) == 0 {
+ 		additions = []inbound.Addition{
+ 			inbound.WithInName("DEFAULT-TUN"),
+diff --git a/vendor/github.com/metacubex/sing-tun/tun_windows.go b/vendor/github.com/metacubex/sing-tun/tun_windows.go
+deleted file mode 100644
+--- a/vendor/github.com/metacubex/sing-tun/tun_windows.go
++++ /dev/null
+@@ -1,627 +0,0 @@
+-package tun
+-
+-import (
+-	"crypto/md5"
+-	"errors"
+-	"fmt"
+-	"math"
+-	"net"
+-	"os"
+-	"sync"
+-	"sync/atomic"
+-	"time"
+-	"unsafe"
+-
+-	E "github.com/metacubex/sing/common/exceptions"
+-	"github.com/metacubex/sing/common/windnsapi"
+-
+-	"github.com/metacubex/sing-tun/internal/winipcfg"
+-	"github.com/metacubex/sing-tun/internal/winsys"
+-	"github.com/metacubex/sing-tun/internal/wintun"
+-
+-	"golang.org/x/sys/windows"
+-)
+-
+-var (
+-	TunnelType              = "sing-tun"
+-	ipv6AllRoutersMulticast = winsys.FWP_BYTE_ARRAY16{ByteArray16: [16]uint8{0xff, 0x02, 15: 0x02}}
+-)
+-
+-type NativeTun struct {
+-	adapter     *wintun.Adapter
+-	options     Options
+-	session     wintun.Session
+-	readWait    windows.Handle
+-	rate        rateJuggler
+-	running     sync.WaitGroup
+-	closeOnce   sync.Once
+-	close       atomic.Int32
+-	fwpmSession uintptr
+-}
+-
+-func New(options Options) (WinTun, error) {
+-	if options.FileDescriptor != 0 {
+-		return nil, os.ErrInvalid
+-	}
+-	adapter, err := wintun.CreateAdapter(options.Name, TunnelType, generateGUIDByDeviceName(options.Name))
+-	if err != nil {
+-		if !errors.Is(err, os.ErrExist) {
+-			return nil, err
+-		}
+-		createErr := err
+-		adapter, err = wintun.OpenAdapter(options.Name)
+-		if err != nil {
+-			return nil, E.Errors(E.Cause(createErr, "create adapter"), E.Cause(err, "open existing adapter"))
+-		}
+-	}
+-	nativeTun := &NativeTun{
+-		adapter: adapter,
+-		options: options,
+-	}
+-	session, err := adapter.StartSession(0x800000)
+-	if err != nil {
+-		return nil, err
+-	}
+-	nativeTun.session = session
+-	nativeTun.readWait = session.ReadWaitEvent()
+-	err = nativeTun.configure()
+-	if err != nil {
+-		session.End()
+-		adapter.Close()
+-		return nil, err
+-	}
+-	return nativeTun, nil
+-}
+-
+-func (t *NativeTun) configure() error {
+-	luid := winipcfg.LUID(t.adapter.LUID())
+-	if len(t.options.Inet4Address) > 0 {
+-		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET), t.options.Inet4Address)
+-		if err != nil {
+-			return E.Cause(err, "set ipv4 address")
+-		}
+-		if t.options.DNSModeOrDefault() != DNSModeDisabled {
+-			dnsServers, err := t.options.Inet4DNSAddress()
+-			if err != nil {
+-				return err
+-			}
+-			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), dnsServers, nil)
+-			if err != nil {
+-				return E.Cause(err, "set ipv4 dns")
+-			}
+-		} else {
+-			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), nil, nil)
+-			if err != nil {
+-				return E.Cause(err, "set ipv4 dns")
+-			}
+-		}
+-	}
+-	if len(t.options.Inet6Address) > 0 {
+-		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET6), t.options.Inet6Address)
+-		if err != nil {
+-			return E.Cause(err, "set ipv6 address")
+-		}
+-		if t.options.DNSModeOrDefault() != DNSModeDisabled {
+-			dnsServers, err := t.options.Inet6DNSAddress()
+-			if err != nil {
+-				return err
+-			}
+-			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), dnsServers, nil)
+-			if err != nil {
+-				return E.Cause(err, "set ipv6 dns")
+-			}
+-		} else {
+-			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), nil, nil)
+-			if err != nil {
+-				return E.Cause(err, "set ipv6 dns")
+-			}
+-		}
+-	}
+-	if len(t.options.Inet4Address) > 0 || len(t.options.Inet6Address) > 0 {
+-		_ = luid.DisableDNSRegistration()
+-	}
+-	if t.options.AutoRoute {
+-		gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+-		routeRanges, err := t.options.BuildAutoRouteRanges(false)
+-		if err != nil {
+-			return err
+-		}
+-		for _, routeRange := range routeRanges {
+-			if routeRange.Addr().Is4() {
+-				err = luid.AddRoute(routeRange, gateway4, 0)
+-			} else {
+-				err = luid.AddRoute(routeRange, gateway6, 0)
+-			}
+-		}
+-		if err != nil {
+-			return err
+-		}
+-		err = windnsapi.FlushResolverCache()
+-		if err != nil {
+-			return err
+-		}
+-	}
+-	if len(t.options.Inet4Address) > 0 {
+-		inetIf, err := luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET))
+-		if err != nil {
+-			return err
+-		}
+-		inetIf.ForwardingEnabled = true
+-		inetIf.RouterDiscoveryBehavior = winipcfg.RouterDiscoveryDisabled
+-		inetIf.DadTransmits = 0
+-		inetIf.ManagedAddressConfigurationSupported = false
+-		inetIf.OtherStatefulConfigurationSupported = false
+-		inetIf.NLMTU = t.options.MTU
+-		if t.options.AutoRoute {
+-			inetIf.UseAutomaticMetric = false
+-			inetIf.Metric = 0
+-		}
+-		err = inetIf.Set()
+-		if err != nil {
+-			return E.Cause(err, "set ipv4 options")
+-		}
+-	}
+-	if len(t.options.Inet6Address) > 0 {
+-		inet6If, err := luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET6))
+-		if err != nil {
+-			return err
+-		}
+-		inet6If.RouterDiscoveryBehavior = winipcfg.RouterDiscoveryDisabled
+-		inet6If.DadTransmits = 0
+-		inet6If.ManagedAddressConfigurationSupported = false
+-		inet6If.OtherStatefulConfigurationSupported = false
+-		inet6If.NLMTU = t.options.MTU
+-		if t.options.AutoRoute {
+-			inet6If.UseAutomaticMetric = false
+-			inet6If.Metric = 0
+-		}
+-		err = inet6If.Set()
+-		if err != nil {
+-			return E.Cause(err, "set ipv6 options")
+-		}
+-	}
+-
+-	if t.options.AutoRoute && t.options.StrictRoute {
+-		var engine uintptr
+-		session := &winsys.FWPM_SESSION0{Flags: winsys.FWPM_SESSION_FLAG_DYNAMIC}
+-		err := winsys.FwpmEngineOpen0(nil, winsys.RPC_C_AUTHN_DEFAULT, nil, session, unsafe.Pointer(&engine))
+-		if err != nil {
+-			return os.NewSyscallError("FwpmEngineOpen0", err)
+-		}
+-		t.fwpmSession = engine
+-
+-		subLayerKey, err := windows.GenerateGUID()
+-		if err != nil {
+-			return os.NewSyscallError("CoCreateGuid", err)
+-		}
+-
+-		subLayer := winsys.FWPM_SUBLAYER0{}
+-		subLayer.SubLayerKey = subLayerKey
+-		subLayer.DisplayData = winsys.CreateDisplayData(TunnelType, "auto-route rules")
+-		subLayer.Weight = math.MaxUint16
+-		err = winsys.FwpmSubLayerAdd0(engine, &subLayer, 0)
+-		if err != nil {
+-			return os.NewSyscallError("FwpmSubLayerAdd0", err)
+-		}
+-
+-		processAppID, err := winsys.GetCurrentProcessAppID()
+-		if err != nil {
+-			return err
+-		}
+-		defer winsys.FwpmFreeMemory0(unsafe.Pointer(&processAppID))
+-
+-		var filterId uint64
+-		permitCondition := make([]winsys.FWPM_FILTER_CONDITION0, 1)
+-		permitCondition[0].FieldKey = winsys.FWPM_CONDITION_ALE_APP_ID
+-		permitCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
+-		permitCondition[0].ConditionValue.Type = winsys.FWP_BYTE_BLOB_TYPE
+-		permitCondition[0].ConditionValue.Value = uintptr(unsafe.Pointer(processAppID))
+-
+-		permitFilter4 := winsys.FWPM_FILTER0{}
+-		permitFilter4.FilterCondition = &permitCondition[0]
+-		permitFilter4.NumFilterConditions = 1
+-		permitFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "protect ipv4")
+-		permitFilter4.SubLayerKey = subLayerKey
+-		permitFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
+-		permitFilter4.Action.Type = winsys.FWP_ACTION_PERMIT
+-		permitFilter4.Weight.Type = winsys.FWP_UINT8
+-		permitFilter4.Weight.Value = uintptr(13)
+-		permitFilter4.Flags = winsys.FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
+-		err = winsys.FwpmFilterAdd0(engine, &permitFilter4, 0, &filterId)
+-		if err != nil {
+-			return os.NewSyscallError("FwpmFilterAdd0", err)
+-		}
+-
+-		permitFilter6 := winsys.FWPM_FILTER0{}
+-		permitFilter6.FilterCondition = &permitCondition[0]
+-		permitFilter6.NumFilterConditions = 1
+-		permitFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "protect ipv6")
+-		permitFilter6.SubLayerKey = subLayerKey
+-		permitFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+-		permitFilter6.Action.Type = winsys.FWP_ACTION_PERMIT
+-		permitFilter6.Weight.Type = winsys.FWP_UINT8
+-		permitFilter6.Weight.Value = uintptr(13)
+-		permitFilter6.Flags = winsys.FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
+-		err = winsys.FwpmFilterAdd0(engine, &permitFilter6, 0, &filterId)
+-		if err != nil {
+-			return os.NewSyscallError("FwpmFilterAdd0", err)
+-		}
+-
+-		/*if len(t.options.Inet4Address) == 0 {
+-			blockFilter := winsys.FWPM_FILTER0{}
+-			blockFilter.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv4")
+-			blockFilter.SubLayerKey = subLayerKey
+-			blockFilter.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
+-			blockFilter.Action.Type = winsys.FWP_ACTION_BLOCK
+-			blockFilter.Weight.Type = winsys.FWP_UINT8
+-			blockFilter.Weight.Value = uintptr(12)
+-			err = winsys.FwpmFilterAdd0(engine, &blockFilter, 0, &filterId)
+-			if err != nil {
+-				return os.NewSyscallError("FwpmFilterAdd0", err)
+-			}
+-		}*/
+-
+-		if len(t.options.Inet6Address) == 0 {
+-			ndpCondition := make([]winsys.FWPM_FILTER_CONDITION0, 4)
+-			ndpCondition[0].FieldKey = winsys.FWPM_CONDITION_IP_PROTOCOL
+-			ndpCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
+-			ndpCondition[0].ConditionValue.Type = winsys.FWP_UINT8
+-			ndpCondition[0].ConditionValue.Value = uintptr(winsys.IPPROTO_ICMPV6)
+-			ndpCondition[1].FieldKey = winsys.FWPM_CONDITION_ICMP_TYPE
+-			ndpCondition[1].MatchType = winsys.FWP_MATCH_EQUAL
+-			ndpCondition[1].ConditionValue.Type = winsys.FWP_UINT16
+-			ndpCondition[2].FieldKey = winsys.FWPM_CONDITION_ICMP_CODE
+-			ndpCondition[2].MatchType = winsys.FWP_MATCH_EQUAL
+-			ndpCondition[2].ConditionValue.Type = winsys.FWP_UINT16
+-			ndpCondition[2].ConditionValue.Value = 0
+-			ndpCondition[3].FieldKey = winsys.FWPM_CONDITION_IP_REMOTE_ADDRESS
+-			ndpCondition[3].MatchType = winsys.FWP_MATCH_EQUAL
+-			ndpCondition[3].ConditionValue.Type = winsys.FWP_BYTE_ARRAY16_TYPE
+-			ndpCondition[3].ConditionValue.Value = uintptr(unsafe.Pointer(&ipv6AllRoutersMulticast))
+-			for _, ndpMessage := range []struct {
+-				name          string
+-				icmpType      uint16
+-				numConditions uint32
+-			}{
+-				{"router solicitation", 133, 4},
+-				{"neighbor solicitation", 135, 3},
+-				{"neighbor advertisement", 136, 3},
+-			} {
+-				ndpCondition[1].ConditionValue.Value = uintptr(ndpMessage.icmpType)
+-				ndpFilter := winsys.FWPM_FILTER0{}
+-				ndpFilter.FilterCondition = &ndpCondition[0]
+-				ndpFilter.NumFilterConditions = ndpMessage.numConditions
+-				ndpFilter.DisplayData = winsys.CreateDisplayData(TunnelType, "allow ipv6 "+ndpMessage.name)
+-				ndpFilter.SubLayerKey = subLayerKey
+-				ndpFilter.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+-				ndpFilter.Action.Type = winsys.FWP_ACTION_PERMIT
+-				ndpFilter.Weight.Type = winsys.FWP_UINT8
+-				ndpFilter.Weight.Value = uintptr(13)
+-				err = winsys.FwpmFilterAdd0(engine, &ndpFilter, 0, &filterId)
+-				if err != nil {
+-					return os.NewSyscallError("FwpmFilterAdd0", err)
+-				}
+-			}
+-
+-			blockFilter := winsys.FWPM_FILTER0{}
+-			blockFilter.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv6")
+-			blockFilter.SubLayerKey = subLayerKey
+-			blockFilter.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+-			blockFilter.Action.Type = winsys.FWP_ACTION_BLOCK
+-			blockFilter.Weight.Type = winsys.FWP_UINT8
+-			blockFilter.Weight.Value = uintptr(12)
+-			err = winsys.FwpmFilterAdd0(engine, &blockFilter, 0, &filterId)
+-			if err != nil {
+-				return os.NewSyscallError("FwpmFilterAdd0", err)
+-			}
+-		}
+-
+-		netInterface, err := net.InterfaceByName(t.options.Name)
+-		if err != nil {
+-			return err
+-		}
+-
+-		tunCondition := make([]winsys.FWPM_FILTER_CONDITION0, 1)
+-		tunCondition[0].FieldKey = winsys.FWPM_CONDITION_LOCAL_INTERFACE_INDEX
+-		tunCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
+-		tunCondition[0].ConditionValue.Type = winsys.FWP_UINT32
+-		tunCondition[0].ConditionValue.Value = uintptr(uint32(netInterface.Index))
+-
+-		if len(t.options.Inet4Address) > 0 {
+-			tunFilter4 := winsys.FWPM_FILTER0{}
+-			tunFilter4.FilterCondition = &tunCondition[0]
+-			tunFilter4.NumFilterConditions = 1
+-			tunFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "allow ipv4")
+-			tunFilter4.SubLayerKey = subLayerKey
+-			tunFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
+-			tunFilter4.Action.Type = winsys.FWP_ACTION_PERMIT
+-			tunFilter4.Weight.Type = winsys.FWP_UINT8
+-			tunFilter4.Weight.Value = uintptr(11)
+-			err = winsys.FwpmFilterAdd0(engine, &tunFilter4, 0, &filterId)
+-			if err != nil {
+-				return os.NewSyscallError("FwpmFilterAdd0", err)
+-			}
+-		}
+-
+-		if len(t.options.Inet6Address) > 0 {
+-			tunFilter6 := winsys.FWPM_FILTER0{}
+-			tunFilter6.FilterCondition = &tunCondition[0]
+-			tunFilter6.NumFilterConditions = 1
+-			tunFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "allow ipv6")
+-			tunFilter6.SubLayerKey = subLayerKey
+-			tunFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+-			tunFilter6.Action.Type = winsys.FWP_ACTION_PERMIT
+-			tunFilter6.Weight.Type = winsys.FWP_UINT8
+-			tunFilter6.Weight.Value = uintptr(11)
+-			err = winsys.FwpmFilterAdd0(engine, &tunFilter6, 0, &filterId)
+-			if err != nil {
+-				return os.NewSyscallError("FwpmFilterAdd0", err)
+-			}
+-		}
+-
+-		if t.options.DNSModeOrDefault() == DNSModeHijack {
+-			blockDNSCondition := make([]winsys.FWPM_FILTER_CONDITION0, 1)
+-			blockDNSCondition[0].FieldKey = winsys.FWPM_CONDITION_IP_REMOTE_PORT
+-			blockDNSCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
+-			blockDNSCondition[0].ConditionValue.Type = winsys.FWP_UINT16
+-			blockDNSCondition[0].ConditionValue.Value = uintptr(uint16(53))
+-
+-			blockDNSFilter4 := winsys.FWPM_FILTER0{}
+-			blockDNSFilter4.FilterCondition = &blockDNSCondition[0]
+-			blockDNSFilter4.NumFilterConditions = 1
+-			blockDNSFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv4 dns")
+-			blockDNSFilter4.SubLayerKey = subLayerKey
+-			blockDNSFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
+-			blockDNSFilter4.Action.Type = winsys.FWP_ACTION_BLOCK
+-			blockDNSFilter4.Weight.Type = winsys.FWP_UINT8
+-			blockDNSFilter4.Weight.Value = uintptr(10)
+-			err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter4, 0, &filterId)
+-			if err != nil {
+-				return os.NewSyscallError("FwpmFilterAdd0", err)
+-			}
+-
+-			blockDNSFilter6 := winsys.FWPM_FILTER0{}
+-			blockDNSFilter6.FilterCondition = &blockDNSCondition[0]
+-			blockDNSFilter6.NumFilterConditions = 1
+-			blockDNSFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv6 dns")
+-			blockDNSFilter6.SubLayerKey = subLayerKey
+-			blockDNSFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+-			blockDNSFilter6.Action.Type = winsys.FWP_ACTION_BLOCK
+-			blockDNSFilter6.Weight.Type = winsys.FWP_UINT8
+-			blockDNSFilter6.Weight.Value = uintptr(10)
+-			err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter6, 0, &filterId)
+-			if err != nil {
+-				return os.NewSyscallError("FwpmFilterAdd0", err)
+-			}
+-		}
+-	}
+-
+-	return nil
+-}
+-
+-func (t *NativeTun) Read(p []byte) (n int, err error) {
+-	t.running.Add(1)
+-	defer t.running.Done()
+-retry:
+-	if t.close.Load() == 1 {
+-		return 0, os.ErrClosed
+-	}
+-	start := nanotime()
+-	shouldSpin := t.rate.current.Load() >= spinloopRateThreshold && uint64(start-t.rate.nextStartTime.Load()) <= rateMeasurementGranularity*2
+-	for {
+-		if t.close.Load() == 1 {
+-			return 0, os.ErrClosed
+-		}
+-		var packet []byte
+-		packet, err = t.session.ReceivePacket()
+-		switch err {
+-		case nil:
+-			n = copy(p, packet)
+-			t.session.ReleaseReceivePacket(packet)
+-			t.rate.update(uint64(n))
+-			return
+-		case windows.ERROR_NO_MORE_ITEMS:
+-			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
+-				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
+-				goto retry
+-			}
+-			procyield(1)
+-			continue
+-		case windows.ERROR_HANDLE_EOF:
+-			return 0, os.ErrClosed
+-		case windows.ERROR_INVALID_DATA:
+-			return 0, errors.New("send ring corrupt")
+-		}
+-		return 0, fmt.Errorf("read failed: %w", err)
+-	}
+-}
+-
+-func (t *NativeTun) ReadPacket() ([]byte, func(), error) {
+-	t.running.Add(1)
+-retry:
+-	if t.close.Load() == 1 {
+-		t.running.Done()
+-		return nil, nil, os.ErrClosed
+-	}
+-	start := nanotime()
+-	shouldSpin := t.rate.current.Load() >= spinloopRateThreshold && uint64(start-t.rate.nextStartTime.Load()) <= rateMeasurementGranularity*2
+-	for {
+-		if t.close.Load() == 1 {
+-			t.running.Done()
+-			return nil, nil, os.ErrClosed
+-		}
+-		packet, err := t.session.ReceivePacket()
+-		switch err {
+-		case nil:
+-			packetSize := len(packet)
+-			t.rate.update(uint64(packetSize))
+-			return packet, func() {
+-				t.session.ReleaseReceivePacket(packet)
+-				t.running.Done()
+-			}, nil
+-		case windows.ERROR_NO_MORE_ITEMS:
+-			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
+-				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
+-				goto retry
+-			}
+-			procyield(1)
+-			continue
+-		case windows.ERROR_HANDLE_EOF:
+-			t.running.Done()
+-			return nil, nil, os.ErrClosed
+-		case windows.ERROR_INVALID_DATA:
+-			t.running.Done()
+-			return nil, nil, errors.New("send ring corrupt")
+-		}
+-		t.running.Done()
+-		return nil, nil, fmt.Errorf("read failed: %w", err)
+-	}
+-}
+-
+-func (t *NativeTun) ReadFunc(block func(b []byte)) error {
+-	t.running.Add(1)
+-	defer t.running.Done()
+-retry:
+-	if t.close.Load() == 1 {
+-		return os.ErrClosed
+-	}
+-	start := nanotime()
+-	shouldSpin := t.rate.current.Load() >= spinloopRateThreshold && uint64(start-t.rate.nextStartTime.Load()) <= rateMeasurementGranularity*2
+-	for {
+-		if t.close.Load() == 1 {
+-			return os.ErrClosed
+-		}
+-		packet, err := t.session.ReceivePacket()
+-		switch err {
+-		case nil:
+-			packetSize := len(packet)
+-			block(packet)
+-			t.session.ReleaseReceivePacket(packet)
+-			t.rate.update(uint64(packetSize))
+-			return nil
+-		case windows.ERROR_NO_MORE_ITEMS:
+-			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
+-				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
+-				goto retry
+-			}
+-			procyield(1)
+-			continue
+-		case windows.ERROR_HANDLE_EOF:
+-			return os.ErrClosed
+-		case windows.ERROR_INVALID_DATA:
+-			return errors.New("send ring corrupt")
+-		}
+-		return fmt.Errorf("read failed: %w", err)
+-	}
+-}
+-
+-func (t *NativeTun) Write(p []byte) (n int, err error) {
+-	t.running.Add(1)
+-	defer t.running.Done()
+-	if t.close.Load() == 1 {
+-		return 0, os.ErrClosed
+-	}
+-	t.rate.update(uint64(len(p)))
+-	packet, err := t.session.AllocateSendPacket(len(p))
+-	copy(packet, p)
+-	if err == nil {
+-		t.session.SendPacket(packet)
+-		return len(p), nil
+-	}
+-	switch err {
+-	case windows.ERROR_HANDLE_EOF:
+-		return 0, os.ErrClosed
+-	case windows.ERROR_BUFFER_OVERFLOW:
+-		return 0, nil // Dropping when ring is full.
+-	}
+-	return 0, fmt.Errorf("write failed: %w", err)
+-}
+-
+-func (t *NativeTun) write(packetElementList [][]byte) (n int, err error) {
+-	t.running.Add(1)
+-	defer t.running.Done()
+-	if t.close.Load() == 1 {
+-		return 0, os.ErrClosed
+-	}
+-	var packetSize int
+-	for _, packetElement := range packetElementList {
+-		packetSize += len(packetElement)
+-	}
+-	t.rate.update(uint64(packetSize))
+-	packet, err := t.session.AllocateSendPacket(packetSize)
+-	if err == nil {
+-		var index int
+-		for _, packetElement := range packetElementList {
+-			index += copy(packet[index:], packetElement)
+-		}
+-		t.session.SendPacket(packet)
+-		return
+-	}
+-	switch err {
+-	case windows.ERROR_HANDLE_EOF:
+-		return 0, os.ErrClosed
+-	case windows.ERROR_BUFFER_OVERFLOW:
+-		return 0, nil // Dropping when ring is full.
+-	}
+-	return 0, fmt.Errorf("write failed: %w", err)
+-}
+-
+-func (t *NativeTun) Close() error {
+-	var err error
+-	t.closeOnce.Do(func() {
+-		t.close.Store(1)
+-		windows.SetEvent(t.readWait)
+-		t.running.Wait()
+-		t.session.End()
+-		t.adapter.Close()
+-		if t.fwpmSession != 0 {
+-			winsys.FwpmEngineClose0(t.fwpmSession)
+-		}
+-		if t.options.AutoRoute {
+-			windnsapi.FlushResolverCache()
+-		}
+-	})
+-	return err
+-}
+-
+-func generateGUIDByDeviceName(name string) *windows.GUID {
+-	hash := md5.New()
+-	hash.Write([]byte("wintun"))
+-	hash.Write([]byte(name))
+-	sum := hash.Sum(nil)
+-	return (*windows.GUID)(unsafe.Pointer(&sum[0]))
+-}
+-
+-//go:linkname procyield runtime.procyield
+-func procyield(cycles uint32)
+-
+-//go:linkname nanotime runtime.nanotime
+-func nanotime() int64
+-
+-type rateJuggler struct {
+-	current       atomic.Uint64
+-	nextByteCount atomic.Uint64
+-	nextStartTime atomic.Int64
+-	changing      atomic.Int32
+-}
+-
+-func (rate *rateJuggler) update(packetLen uint64) {
+-	now := nanotime()
+-	total := rate.nextByteCount.Add(packetLen)
+-	period := uint64(now - rate.nextStartTime.Load())
+-	if period >= rateMeasurementGranularity {
+-		if !rate.changing.CompareAndSwap(0, 1) {
+-			return
+-		}
+-		rate.nextStartTime.Store(now)
+-		rate.current.Store(total * uint64(time.Second/time.Nanosecond) / period)
+-		rate.nextByteCount.Store(0)
+-		rate.changing.Store(0)
+-	}
+-}
+-
+-const (
+-	rateMeasurementGranularity = uint64((time.Second / 2) / time.Nanosecond)
+-	spinloopRateThreshold      = 800000000 / 8                                   // 800mbps
+-	spinloopDuration           = uint64(time.Millisecond / 80 / time.Nanosecond) // ~1gbit/s
+-)
+diff --git a/vendor/github.com/metacubex/sing-tun/tun_windows_gvisor.go b/vendor/github.com/metacubex/sing-tun/tun_windows_gvisor.go
+deleted file mode 100644
+--- a/vendor/github.com/metacubex/sing-tun/tun_windows_gvisor.go
++++ /dev/null
+@@ -1,144 +0,0 @@
+-//go:build with_gvisor && windows
+-
+-package tun
+-
+-import (
+-	"sync"
+-
+-	"github.com/metacubex/gvisor/pkg/buffer"
+-	"github.com/metacubex/gvisor/pkg/tcpip"
+-	"github.com/metacubex/gvisor/pkg/tcpip/header"
+-	"github.com/metacubex/gvisor/pkg/tcpip/stack"
+-)
+-
+-var _ GVisorTun = (*NativeTun)(nil)
+-
+-func (t *NativeTun) WritePacket(pkt *stack.PacketBuffer) (int, error) {
+-	return t.write(pkt.AsSlices())
+-}
+-
+-func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error) {
+-	return &WintunEndpoint{tun: t}, stack.NICOptions{}, nil
+-}
+-
+-var _ stack.LinkEndpoint = (*WintunEndpoint)(nil)
+-
+-type WintunEndpoint struct {
+-	tun        *NativeTun
+-	mu         sync.RWMutex // mu guards dispatcher
+-	dispatcher stack.NetworkDispatcher
+-}
+-
+-func (e *WintunEndpoint) MTU() uint32 {
+-	return e.tun.options.MTU
+-}
+-
+-func (e *WintunEndpoint) SetMTU(mtu uint32) {
+-}
+-
+-func (e *WintunEndpoint) MaxHeaderLength() uint16 {
+-	return 0
+-}
+-
+-func (e *WintunEndpoint) LinkAddress() tcpip.LinkAddress {
+-	return ""
+-}
+-
+-func (e *WintunEndpoint) SetLinkAddress(addr tcpip.LinkAddress) {
+-}
+-
+-func (e *WintunEndpoint) Capabilities() stack.LinkEndpointCapabilities {
+-	return stack.CapabilityRXChecksumOffload
+-}
+-
+-func (e *WintunEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
+-	e.mu.Lock()
+-	defer e.mu.Unlock()
+-	if dispatcher == nil && e.dispatcher != nil {
+-		e.dispatcher = nil
+-		return
+-	}
+-	if dispatcher != nil && e.dispatcher == nil {
+-		e.dispatcher = dispatcher
+-		go e.dispatchLoop()
+-	}
+-}
+-
+-func (e *WintunEndpoint) dispatchLoop() {
+-	for {
+-		var packetBuffer buffer.Buffer
+-		err := e.tun.ReadFunc(func(b []byte) {
+-			packetBuffer = buffer.MakeWithData(b)
+-		})
+-		if err != nil {
+-			break
+-		}
+-		ihl, ok := packetBuffer.PullUp(0, 1)
+-		if !ok {
+-			packetBuffer.Release()
+-			continue
+-		}
+-		var networkProtocol tcpip.NetworkProtocolNumber
+-		switch header.IPVersion(ihl.AsSlice()) {
+-		case header.IPv4Version:
+-			networkProtocol = header.IPv4ProtocolNumber
+-		case header.IPv6Version:
+-			networkProtocol = header.IPv6ProtocolNumber
+-		default:
+-			e.tun.Write(packetBuffer.Flatten())
+-			packetBuffer.Release()
+-			continue
+-		}
+-		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
+-			Payload:           packetBuffer,
+-			IsForwardedPacket: true,
+-		})
+-		e.mu.RLock()
+-		dispatcher := e.dispatcher
+-		e.mu.RUnlock()
+-		if dispatcher == nil {
+-			pkt.DecRef()
+-			return
+-		}
+-		dispatcher.DeliverNetworkPacket(networkProtocol, pkt)
+-		pkt.DecRef()
+-	}
+-}
+-
+-func (e *WintunEndpoint) IsAttached() bool {
+-	e.mu.RLock()
+-	defer e.mu.RUnlock()
+-	return e.dispatcher != nil
+-}
+-
+-func (e *WintunEndpoint) Wait() {
+-}
+-
+-func (e *WintunEndpoint) ARPHardwareType() header.ARPHardwareType {
+-	return header.ARPHardwareNone
+-}
+-
+-func (e *WintunEndpoint) AddHeader(buffer *stack.PacketBuffer) {
+-}
+-
+-func (e *WintunEndpoint) ParseHeader(ptr *stack.PacketBuffer) bool {
+-	return true
+-}
+-
+-func (e *WintunEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
+-	var n int
+-	for _, packet := range packetBufferList.AsSlice() {
+-		_, err := e.tun.write(packet.AsSlices())
+-		if err != nil {
+-			return n, &tcpip.ErrAborted{}
+-		}
+-		n++
+-	}
+-	return n, nil
+-}
+-
+-func (e *WintunEndpoint) Close() {
+-}
+-
+-func (e *WintunEndpoint) SetOnCloseAction(f func()) {
+-}
+diff --git a/vendor/github.com/metacubex/sing-tun/tun_disabled_windows.go b/vendor/github.com/metacubex/sing-tun/tun_disabled_windows.go
+new file mode 100644
+--- /dev/null
++++ b/vendor/github.com/metacubex/sing-tun/tun_disabled_windows.go
+@@ -0,0 +1,9 @@
++package tun
++
++import "errors"
++
++var TunnelType = "sing-tun"
++
++func New(options Options) (WinTun, error) {
++	return nil, errors.New("Windows system TUN is not supported by this Muse build")
++}

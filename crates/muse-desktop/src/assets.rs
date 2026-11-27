@@ -71,6 +71,11 @@ const ICONS: &[(&str, &[u8])] = icons![
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == "app/muse-256.png" {
+            return Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../../assets/app/muse-256.png"
+            ))));
+        }
         Ok(ICONS
             .iter()
             .find(|(name, _)| *name == path)

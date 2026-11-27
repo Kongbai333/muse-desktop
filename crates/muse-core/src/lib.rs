@@ -305,6 +305,8 @@ pub struct ProxyProfile {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubscriptionNode {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_pool: Option<bool>,
     #[serde(skip)]
     pub reason: Option<String>,
     pub id: Uuid,
@@ -312,6 +314,12 @@ pub struct SubscriptionNode {
     pub name: String,
     pub protocol: String,
     pub revision: Option<Uuid>,
+}
+
+impl SubscriptionNode {
+    pub fn selectable(&self) -> bool {
+        self.in_pool == Some(true) && self.revision.is_some()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

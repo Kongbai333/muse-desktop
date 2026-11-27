@@ -19,7 +19,6 @@ pub(super) struct ProxyEditor {
     pub port: Entity<TextInput>,
     pub user: Entity<TextInput>,
     pub secret: Entity<TextInput>,
-    pub reveal: bool,
     pub message: String,
     pub good: bool,
     pub pending: Option<uuid::Uuid>,
@@ -61,7 +60,6 @@ impl ProxyEditor {
             port,
             user,
             secret,
-            reveal: false,
             message: String::new(),
             good: false,
             pending: None,
@@ -107,7 +105,6 @@ impl ProxyEditor {
             input.set_text(&draft.secret, cx);
             input.set_secure(true, cx);
         });
-        self.reveal = false;
         self.revisions = self.revisions(cx);
         self.pending = None;
         self.good = false;
@@ -200,6 +197,9 @@ impl MuseWindow {
         cx.notify();
     }
     pub(super) fn test_proxy(&mut self, cx: &mut Context<Self>) {
+        if self.proxy_editor.pending.is_some() {
+            return;
+        }
         let Some(account) = self.workspace.active_account_id() else {
             return;
         };
