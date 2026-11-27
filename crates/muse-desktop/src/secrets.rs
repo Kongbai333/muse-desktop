@@ -46,7 +46,7 @@ impl ProtectedStore {
         revision: Option<uuid::Uuid>,
         value: &str,
     ) -> Result<(), String> {
-        muse_proxy::Upstream::parse(value).map_err(|e| e.to_string())?;
+        validate_endpoint(value)?;
         self.save_protected(id, revision, value)
     }
     pub fn save_protected(
@@ -86,7 +86,7 @@ impl ProtectedStore {
         revision: Option<uuid::Uuid>,
     ) -> Result<Zeroizing<String>, String> {
         let value = self.load_protected(id, revision)?;
-        muse_proxy::Upstream::parse(&value).map_err(|e| e.to_string())?;
+        validate_endpoint(&value)?;
         Ok(value)
     }
     pub fn load_protected(
@@ -109,6 +109,21 @@ impl ProtectedStore {
         let plain = protect(id, revision, &bytes, false)?;
         let value = String::from_utf8(plain.to_vec()).map_err(|_| "代理凭据内容无效")?;
         Ok(Zeroizing::new(value))
+    }
+}
+
+fn validate_endpoint(value: &str) -> Result<(), String> {
+    if value.starts_with(crate::mihomo::NATIVE) {
+        return crate::mihomo::snapshot(value).map(|_| ());
+    }
+    if value.starts_with(crate::mihomo::schema::PREFIX) {
+        crate::mihomo::schema::restore(value)
+            .map(|_| ())
+            .map_err(String::from)
+    } else {
+        muse_proxy::Upstream::parse(value)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 

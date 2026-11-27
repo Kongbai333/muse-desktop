@@ -6,6 +6,17 @@ impl MuseWindow {
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let d = self.transfer_dialog.as_ref().unwrap();
+        let password_field = |input| {
+            crate::input::InputField::new(
+                input,
+                div()
+                    .border_1()
+                    .border_color(rgb(colors().line))
+                    .rounded_lg()
+                    .px_2()
+                    .py_1(),
+            )
+        };
         let generation = d.gate.id;
         let mut rows = Vec::new();
         if d.export && d.phase == Phase::Form {
@@ -126,8 +137,8 @@ impl MuseWindow {
                     .when(form,|e|e.child(super::super::chrome::text_button("transfer-pick-file","选择文件",false,cx.listener(|this,_,window,cx|this.pick_transfer_file(window,cx)))))))
                 .children(rows)
                 .when(form,|e|e.child(div().flex().flex_col().gap_2().child("迁移密码")
-                    .child(div().border_1().border_color(rgb(colors().line)).rounded_lg().px_2().py_1().child(d.password.clone()))
-                    .when(d.export,|e|e.child("再次输入迁移密码").child(div().border_1().border_color(rgb(colors().line)).rounded_lg().px_2().py_1().child(d.confirmation.clone())))
+                    .child(password_field(d.password.clone()))
+                    .when(d.export,|e|e.child("再次输入迁移密码").child(password_field(d.confirmation.clone())))
                     .child(div().text_size(px(11.)).line_height(px(18.)).text_color(rgb(colors().secondary)).child("密码区分大小写，保留空格、换行及 Unicode 原字符；不自动修剪或正规化。"))))
                 .when(preview,|e|e.child(div().id("transfer-acknowledge").p_3().rounded_lg().border_1().border_color(rgb(if d.acknowledged{colors().blue}else{colors().line})).cursor_pointer().text_size(px(12.))
                     .child(if d.acknowledged{"✓ 我已核对账号、静态代理和上述路由/Cookie 差异，确认新建并激活。"}else{"□ 我已核对账号、静态代理和上述路由/Cookie 差异，确认新建并激活。"})

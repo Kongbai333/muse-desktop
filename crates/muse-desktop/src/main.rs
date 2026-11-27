@@ -17,6 +17,7 @@ mod diagnostics;
 mod import;
 mod input;
 mod input_mask;
+mod mihomo;
 mod motion;
 mod page_observer;
 mod platform;
@@ -167,16 +168,14 @@ fn main() {
             }
             let (id, revision) = workspace.proxy_credentials(account)?;
             let secret = secrets::ProtectedStore::new(&data_dir).load_selected(id, revision)?;
-            let upstream =
-                muse_proxy::Upstream::parse(secret.as_str()).map_err(|e| e.to_string())?;
-            let upstream = if matches!(
+            if matches!(
                 account.network,
                 muse_core::AccountNetwork::SubscriptionNode { .. }
             ) {
-                upstream.fixed_node()
-            } else {
-                upstream
-            };
+                return Err("固定 Mihomo 节点请在绑定账号中实际打开网页；未测试页面".into());
+            }
+            let upstream =
+                muse_proxy::Upstream::parse(secret.as_str()).map_err(|e| e.to_string())?;
             if upstream.protocol().subscription_only() {
                 return Err(
                     "此订阅协议需要实际目标流量验证，请在绑定账号中打开网页；未测试页面".into(),

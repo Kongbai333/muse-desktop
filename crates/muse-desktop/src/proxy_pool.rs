@@ -109,6 +109,24 @@ pub fn migrate(root: &Path, workspace: &mut Workspace) -> Result<(), String> {
     let mut candidate = workspace.clone();
     let protected = ProtectedStore::new(root);
     let mut changed = false;
+    let bound: std::collections::HashSet<_> = candidate
+        .accounts
+        .iter()
+        .filter_map(|account| match account.network {
+            AccountNetwork::SubscriptionNode { node_id, .. } => Some(node_id),
+            _ => None,
+        })
+        .collect();
+    for node in candidate
+        .subscriptions
+        .iter_mut()
+        .flat_map(|sub| &mut sub.nodes)
+    {
+        if node.in_pool.is_none() {
+            node.in_pool = Some(node.revision.is_some() && bound.contains(&node.id));
+            changed = true;
+        }
+    }
     for account in &mut candidate.accounts {
         let force_proxy = match account.network {
             AccountNetwork::HttpProxy { force_proxy } => Some(force_proxy),
@@ -276,13 +294,19 @@ pub fn prepare_account(
         }
         RouteChoice::System => AccountNetwork::Direct,
         RouteChoice::Node(node_id) => {
-            let revision = workspace
+            let node = workspace
                 .subscriptions
                 .iter()
                 .flat_map(|sub| &sub.nodes)
                 .find(|node| node.id == node_id)
-                .and_then(|node| node.revision)
                 .ok_or("订阅节点不可用；请选择可用节点")?;
+            let preserving = owner
+                .and_then(|id| workspace.account(id))
+                .is_some_and(|account| RouteChoice::from(account.network) == route);
+            let revision = node.revision.ok_or("订阅节点不可用；请选择可用节点")?;
+            if !preserving && !node.selectable() {
+                return Err("此节点未加入代理池，请重新选择".into());
+            }
             ProtectedStore::new(root).load_selected(node_id, Some(revision))?;
             AccountNetwork::SubscriptionNode {
                 node_id,
@@ -336,6 +360,27 @@ fn commit(root: &Path, workspace: &mut Workspace, candidate: Workspace) -> Resul
     candidate.save(&root.join("workspace.json"))?;
     *workspace = candidate;
     Ok(())
+}
+
+pub fn set_membership(
+    root: &Path,
+    workspace: &mut Workspace,
+    source: Uuid,
+    id: Uuid,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut candidate = workspace.clone();
+    let node = candidate
+        .subscriptions
+        .iter_mut()
+        .find(|sub| sub.id == source)
+        .and_then(|sub| sub.nodes.iter_mut().find(|node| node.id == id))
+        .ok_or("节点已变更，请重新选择")?;
+    if enabled && node.revision.is_none() {
+        return Err("受限节点不能加入代理池".into());
+    }
+    node.in_pool = Some(enabled);
+    commit(root, workspace, candidate)
 }
 
 pub fn save_account_with_locale(

@@ -11,3 +11,5 @@
 *.png binary
 *.ico binary
 *.res binary
+kernel/changes.patch text eol=lf
+kernel/mihomo-source.zip binary

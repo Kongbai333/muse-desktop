@@ -232,6 +232,9 @@ impl MuseWindow {
                 .rounded(px(16.))
                 .border_1()
                 .border_color(rgb(tone(0xE4E4E7, 0x3F3F46)))
+                .when(self.studio.input.read(cx).shows_focus(window), |card| {
+                    card.border_color(gpui::Hsla::from(rgb(colors().blue)).opacity(0.70))
+                })
                 .bg(rgb(colors().panel))
                 .shadow_md()
                 .pl_4()
@@ -275,17 +278,17 @@ impl MuseWindow {
                 )
                 .child(toolbar),
         );
-        composer.child(
-            div()
-                .w_full()
-                .pt_1()
-                .flex()
-                .justify_center()
-                .text_size(px(11.))
-                .text_color(rgb(tone(0xA1A1AA, 0x92929F)))
-                .child("Enter 发送，Shift+Enter 换行。可以把图片拖到输入框作为参考图；同一账号的任务依次进行，不同账号可以同时生成。"),
-        )
-        .child(self.studio_layout_probe("composer"))
+        composer
+            .child(
+                div()
+                    .w_full()
+                    .pt_1()
+                    .text_center()
+                    .text_size(px(11.))
+                    .text_color(rgb(colors().muted))
+                    .child("同一账号的任务依次生成"),
+            )
+            .child(self.studio_layout_probe("composer"))
     }
 
     /// Opens the system file dialog for a reference image.

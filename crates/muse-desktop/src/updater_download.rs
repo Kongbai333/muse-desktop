@@ -338,8 +338,24 @@ pub fn extract_package(
 pub fn windows_app_file(path: &Path) -> bool {
     matches!(
         path.to_str(),
-        Some("Muse.exe" | "LICENSE" | "NOTICE" | "README.txt" | "THIRD_PARTY_NOTICES.md")
+        Some(
+            "Muse.exe"
+                | "mihomo.exe"
+                | "LICENSE"
+                | "NOTICE"
+                | "README.txt"
+                | "THIRD_PARTY_NOTICES.md"
+        )
     ) || path.starts_with("LICENSES")
+        || path == Path::new("kernel")
+        || [
+            "README.md",
+            "build.ps1",
+            "mihomo-source.zip",
+            "changes.patch",
+        ]
+        .iter()
+        .any(|name| path == Path::new("kernel").join(name))
 }
 impl Source {
     pub fn prepare(

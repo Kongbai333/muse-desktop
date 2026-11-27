@@ -18,10 +18,22 @@ pub struct AccountRoute {
     upstream: Upstream,
     bridge: Option<Arc<ProxyBridge>>,
     context: Context,
+    core: Option<crate::mihomo::Core>,
 }
 
 impl AccountRoute {
-    pub fn start(upstream: Upstream, mut context: Context) -> Result<Self, String> {
+    pub fn managed(root: &std::path::Path, stored: &str, context: Context) -> Result<Self, String> {
+        let (core, upstream) = crate::mihomo::start(root, stored)?;
+        Self::start_inner(upstream, context, Some(core))
+    }
+    pub fn start(upstream: Upstream, context: Context) -> Result<Self, String> {
+        Self::start_inner(upstream, context, None)
+    }
+    fn start_inner(
+        upstream: Upstream,
+        mut context: Context,
+        core: Option<crate::mihomo::Core>,
+    ) -> Result<Self, String> {
         // 111 fixed proxy challenge URIs. Use a conservative 122.0.2365.46
         // floor and require the all-source resource-filter interface below.
         let scoped_auth = wry::webview_version()
@@ -30,7 +42,9 @@ impl AccountRoute {
         let authenticated = upstream.credentials().is_some();
         let via_system =
             muse_proxy::validate_system_upstream(&upstream).map_err(|e| e.to_string())?;
-        let path = if via_system {
+        let path = if core.is_some() {
+            RoutePath::ManagedCore
+        } else if via_system {
             match upstream.protocol() {
                 ProxyProtocol::Http => RoutePath::SystemHttpBridge,
                 ProxyProtocol::Https => RoutePath::SystemHttpsBridge,
@@ -52,7 +66,7 @@ impl AccountRoute {
             }
         };
         context.route = upstream.trace_route_id();
-        context.protocol = Some(upstream.protocol());
+        context.protocol = core.is_none().then_some(upstream.protocol());
         context.route_path = Some(path);
         context.transport = Some(if via_system {
             muse_proxy::trace::Transport::SystemLoopback
@@ -72,7 +86,8 @@ impl AccountRoute {
         .map_err(|_| "代理端点无效")?;
         let bridge = if matches!(
             path,
-            RoutePath::ShadowsocksBridge
+            RoutePath::ManagedCore
+                | RoutePath::ShadowsocksBridge
                 | RoutePath::FixedTlsBridge
                 | RoutePath::Socks5AuthBridge
                 | RoutePath::HttpAuthBridge
@@ -85,7 +100,7 @@ impl AccountRoute {
                 ProxyBridge::start_traced(upstream.clone(), context).map_err(|e| e.to_string())?,
             );
             context.bridge = bridge.trace_context().bridge;
-            if path == RoutePath::FixedTlsBridge {
+            if matches!(path, RoutePath::FixedTlsBridge | RoutePath::ManagedCore) {
                 endpoint = Url::parse(&format!("http://{}/", bridge.address()))
                     .map_err(|_| "本机桥端点无效")?;
             }
@@ -99,11 +114,16 @@ impl AccountRoute {
             upstream,
             bridge,
             context,
+            core,
         })
     }
 
     pub fn is_running(&self) -> bool {
-        self.bridge.as_ref().is_none_or(|b| b.is_running())
+        self.core.as_ref().is_none_or(|core| core.running())
+            && self.bridge.as_ref().is_none_or(|b| b.is_running())
+    }
+    pub fn certificate_error(&self) -> Option<&'static str> {
+        self.core.as_ref()?.certificate_error()
     }
     pub fn trace_context(&self) -> Context {
         self.context
@@ -113,6 +133,7 @@ impl AccountRoute {
     }
     pub fn label(&self) -> &'static str {
         match self.context.route_path {
+            Some(RoutePath::ManagedCore) => "Mihomo · 账号固定出口",
             Some(RoutePath::FixedTlsBridge) => self.upstream.protocol().label(),
             Some(RoutePath::ShadowsocksBridge) => "固定 Shadowsocks AEAD 节点",
             Some(RoutePath::SystemHttpBridge) => "系统回环前置 → 账号 HTTP 代理",
@@ -136,7 +157,7 @@ impl AccountRoute {
             .unwrap_or_else(|| self.endpoint.as_str().trim_end_matches('/').to_owned());
         format!(
             "--disable-quic --force-webrtc-ip-handling-policy=disable_non_proxied_udp --proxy-server={endpoint}{}",
-            if force {
+            if force || self.core.is_some() {
                 " --proxy-bypass-list=<-loopback>"
             } else {
                 ""
@@ -147,7 +168,8 @@ impl AccountRoute {
     /// Reused for each normal tab, cookie reader, and popup reopened as a tab.
     pub fn install(self: &Arc<Self>, view: &WebView, mut context: Context) -> Result<(), String> {
         context.route_path = self.context.route_path;
-        let scoped_bridge = self.context.route_path == Some(RoutePath::FixedTlsBridge);
+        let scoped_bridge =
+            self.core.is_some() || self.context.route_path == Some(RoutePath::FixedTlsBridge);
         if !scoped_bridge && let Some(bridge) = &self.bridge {
             return super::browser::install_local_auth(view, bridge.shared_auth(), context);
         }

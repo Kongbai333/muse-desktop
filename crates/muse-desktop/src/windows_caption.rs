@@ -55,13 +55,61 @@ fn caption_drag_region(
 }
 
 pub struct CaptionBridge(HWND);
+pub fn work_area(window: &Window) -> Option<gpui::Bounds<gpui::Pixels>> {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    };
+    let hwnd = crate::windows_host::hwnd(window).ok()?;
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let scale = window.scale_factor();
+    if !unsafe { GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info) }
+        .as_bool()
+    {
+        return None;
+    }
+    let dip = |value: i32| gpui::px(value as f32 / scale);
+    let rect = info.rcWork;
+    Some(gpui::Bounds::new(
+        gpui::point(dip(rect.left), dip(rect.top)),
+        gpui::size(dip(rect.right - rect.left), dip(rect.bottom - rect.top)),
+    ))
+}
+
 impl CaptionBridge {
     pub fn install(window: &Window) -> Result<Self, String> {
+        Self::new(window, false)
+    }
+    pub fn install_pool(window: &Window) -> Result<Self, String> {
+        Self::new(window, true)
+    }
+    fn new(window: &Window, pool: bool) -> Result<Self, String> {
         let hwnd = crate::windows_host::hwnd(window)?;
-        if unsafe { SetWindowSubclass(hwnd, Some(caption_proc), CAPTION_SUBCLASS, 0) }.as_bool() {
+        if unsafe { SetWindowSubclass(hwnd, Some(caption_proc), CAPTION_SUBCLASS, pool as usize) }
+            .as_bool()
+        {
             Ok(Self(hwnd))
         } else {
             Err("无法启用原生标题栏拖动".into())
+        }
+    }
+
+    pub fn set_pool_border(&self, rgb: u32) {
+        use windows::Win32::Graphics::Dwm::{
+            DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+        };
+        let color = rgb.swap_bytes() >> 8;
+        let corner = DWMWCP_ROUND.0;
+        unsafe {
+            let _ = DwmSetWindowAttribute(self.0, DWMWA_BORDER_COLOR, (&raw const color).cast(), 4);
+            let _ = DwmSetWindowAttribute(
+                self.0,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                (&raw const corner).cast(),
+                4,
+            );
         }
     }
 }
@@ -79,7 +127,7 @@ unsafe extern "system" fn caption_proc(
     wparam: WPARAM,
     lparam: LPARAM,
     _: usize,
-    _: usize,
+    pool: usize,
 ) -> LRESULT {
     // This callback has no GPUI entity borrows and owns no heap state. Windows
     // can run the modal move/size loop here without suppressing its default.
@@ -98,6 +146,9 @@ unsafe extern "system" fn caption_proc(
                     | HTBOTTOMRIGHT
             ) {
                 return native;
+            }
+            if pool != 0 {
+                return DefSubclassProc(hwnd, message, wparam, lparam);
             }
             let mut point = POINT {
                 x: lparam.0 as i16 as i32,

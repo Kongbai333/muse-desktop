@@ -169,7 +169,7 @@ impl MuseWindow {
                     .gap_4()
                     .child(
                         div()
-                            .text_size(px(17.))
+                            .text_size(px(crate::theme::HEADING))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(title),
                     )

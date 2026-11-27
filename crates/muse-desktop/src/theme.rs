@@ -11,6 +11,9 @@ pub const TABS: f32 = 0.0;
 pub const TOOLBAR: f32 = 44.0;
 pub const STATUS: f32 = 24.0;
 pub const MIN_BROWSER_WIDTH: f32 = 360.0;
+pub const HEADING: f32 = 20.;
+pub const SECTION: f32 = 15.;
+pub const CAPTION: f32 = 12.;
 
 use muse_core::ThemeMode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,6 +39,9 @@ pub struct Palette {
     pub track: u32,
     pub muted: u32,
     pub danger: u32,
+    pub attention: u32,
+    pub attention_fill: u32,
+    pub selected: u32,
 }
 
 pub const fn palette_for(mode: ThemeMode) -> Palette {
@@ -46,16 +52,19 @@ pub const fn palette_for(mode: ThemeMode) -> Palette {
             surface: 0xF7F7F8,
             line: 0xECECEF,
             text: 0x18181B,
-            secondary: 0x71717A,
-            blue: 0x2F6FEB,
-            primary: 0x18181B,
-            primary_hover: 0x2E2E33,
+            secondary: 0x595B64,
+            blue: 0x2257BE,
+            primary: 0x245BC4,
+            primary_hover: 0x194DAE,
             on_primary: 0xFFFFFF,
             fill: 0xF2F2F4,
             fill_hover: 0xEBEBEE,
             track: 0xE6E6EA,
-            muted: 0xA1A1AA,
+            muted: 0x656771,
             danger: 0xD92D20,
+            attention: 0x805012,
+            attention_fill: 0xFFF1D5,
+            selected: 0xE4EDFF,
         },
         ThemeMode::Dark => Palette {
             canvas: 0x18181B,
@@ -65,14 +74,17 @@ pub const fn palette_for(mode: ThemeMode) -> Palette {
             text: 0xECECF1,
             secondary: 0xAAAAB5,
             blue: 0x82AAFF,
-            primary: 0xE5E5EB,
-            primary_hover: 0xFFFFFF,
+            primary: 0x96B6FF,
+            primary_hover: 0xB0C8FF,
             on_primary: 0x18181B,
             fill: 0x2B2B31,
             fill_hover: 0x35353D,
             track: 0x41414B,
             muted: 0x92929F,
             danger: 0xFF8A80,
+            attention: 0xF5C77B,
+            attention_fill: 0x413324,
+            selected: 0x293953,
         },
     }
 }

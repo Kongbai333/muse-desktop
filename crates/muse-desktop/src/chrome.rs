@@ -24,6 +24,15 @@ impl Render for Hint {
     }
 }
 
+pub(super) fn keyboard_control(control: Stateful<Div>) -> Stateful<Div> {
+    control
+        .tab_index(0)
+        .border_1()
+        .border_color(transparent_black())
+        .focus(|style| style.border_color(rgb(colors().blue)))
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+}
+
 pub(super) fn icon_button(
     id: &'static str,
     icon: &'static str,
@@ -41,14 +50,14 @@ pub(super) fn icon_button(
         .items_center()
         .justify_center()
         .bg(rgba(if selected {
-            (colors().fill_hover << 8) | 0xFF
+            (colors().selected << 8) | 0xFF
         } else {
             0x00000000
         }))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .tooltip(move |_, cx| cx.new(|_| Hint(label)).into())
         .when(enabled, |element| {
-            element
+            keyboard_control(element)
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(colors().fill_hover)))
                 .active(|s| s.bg(rgb(colors().track)))
@@ -60,7 +69,7 @@ pub(super) fn icon_button(
             if !enabled {
                 tone(0xC0C1C8, 0x676773)
             } else if selected {
-                colors().text
+                colors().blue
             } else {
                 tone(0x6E6F76, 0xAAAAB5)
             },
@@ -73,8 +82,7 @@ pub(super) fn text_button(
     primary: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
-    div()
-        .id(id)
+    keyboard_control(div().id(id))
         .h(px(32.))
         .px_3()
         .rounded_lg()
@@ -110,14 +118,16 @@ pub(super) fn text_button(
         .child(label)
 }
 
-pub(super) fn input_surface(input: Entity<TextInput>) -> Div {
-    div()
-        .rounded_md()
-        .overflow_hidden()
-        .border_1()
-        .border_color(rgb(tone(0xE0E1E3, 0x44444D)))
-        .bg(rgb(colors().panel))
-        .child(input)
+pub(super) fn input_surface(input: Entity<TextInput>) -> impl IntoElement {
+    crate::input::InputField::new(
+        input,
+        div()
+            .rounded_md()
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgb(tone(0xE0E1E3, 0x44444D)))
+            .bg(rgb(colors().panel)),
+    )
 }
 
 fn inspector_segment(
@@ -313,13 +323,15 @@ impl MuseWindow {
                         cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx)),
                     ))
                     .when(left >= 140., |element| {
-                        element.child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(colors().text))
-                                .child("Muse"),
-                        )
+                        element
+                            .child(img("app/muse-256.png").size(px(21.)).flex_none())
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(colors().text))
+                                    .child("Muse"),
+                            )
                     }),
             )
             .when(!self.show_start_page, |element| {
@@ -364,10 +376,10 @@ impl MuseWindow {
     }
 
     fn render_theme_switch(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let option = |id: &'static str, label: &'static str, mode: muse_core::ThemeMode| {
-            let selected = self.display.theme == mode;
-            div()
-                .id(id)
+        let option = |id: &'static str, label: &'static str, mode: Option<muse_core::ThemeMode>| {
+            let selected =
+                mode == (!self.display.follow_system_theme).then_some(self.display.theme);
+            keyboard_control(div().id(id))
                 .h(px(26.))
                 .px(px(9.))
                 .rounded_md()
@@ -382,6 +394,7 @@ impl MuseWindow {
                 }))
                 .when(selected, |element| element.bg(rgb(colors().panel)))
                 .cursor_pointer()
+                .hover(|style| style.bg(rgb(colors().fill_hover)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _, window, cx| this.set_theme(mode, window, cx)))
                 .child(label)
@@ -404,8 +417,17 @@ impl MuseWindow {
                 .absolute()
                 .inset_0(),
             )
-            .child(option("theme-light", "白天", muse_core::ThemeMode::Light))
-            .child(option("theme-dark", "晚上", muse_core::ThemeMode::Dark))
+            .child(option(
+                "theme-light",
+                "白天",
+                Some(muse_core::ThemeMode::Light),
+            ))
+            .child(option(
+                "theme-dark",
+                "晚上",
+                Some(muse_core::ThemeMode::Dark),
+            ))
+            .child(option("theme-system", "系统", None))
     }
 
     fn render_sidebar_divider(&self, width: f32, cx: &Context<Self>) -> Stateful<Div> {
@@ -550,8 +572,8 @@ impl MuseWindow {
                             .left_0()
                             .right_0()
                             .bottom_0()
-                            .h(px(1.))
-                            .bg(rgb(colors().panel)),
+                            .h(px(2.))
+                            .bg(rgb(colors().blue)),
                         self.navigation_transition,
                         self.motion_policy,
                         crate::motion::MotionKind::Popover,
@@ -596,7 +618,7 @@ impl MuseWindow {
             )))
     }
 
-    fn render_toolbar(&self, cx: &Context<Self>) -> Div {
+    fn render_toolbar(&self, window: &Window, cx: &Context<Self>) -> Div {
         let tab = self.workspace.active_account().and_then(|a| a.active_tab());
         let back = !self.show_start_page && tab.is_some_and(|t| t.can_go_back);
         let forward = !self.show_start_page && tab.is_some_and(|t| t.can_go_forward);
@@ -616,7 +638,7 @@ impl MuseWindow {
                 (Some(protocol), Some(name)) => format!("{} · {name}", protocol.label()),
                 (Some(protocol), None) => format!("代理 · {}", protocol.label()),
                 (None, Some(name)) => name,
-                (None, None) => "代理已启用".to_string(),
+                (None, None) => "已配置代理".to_string(),
             }
         } else {
             "系统网络".to_string()
@@ -679,6 +701,10 @@ impl MuseWindow {
                     .bg(rgb(colors().fill))
                     .border_1()
                     .border_color(rgb(colors().fill))
+                    .when(
+                        !self.show_start_page && self.address.read(cx).shows_focus(window),
+                        |shell| shell.border_color(rgb(colors().blue)),
+                    )
                     .child(glyph(
                         if self.show_start_page {
                             "layout-grid"
@@ -724,7 +750,7 @@ impl MuseWindow {
                             .text_size(px(11.))
                             .text_color(rgb(colors().secondary))
                             .child(div().size(px(6.)).rounded_full().bg(rgb(if proxied {
-                                0x16A34A
+                                colors().blue
                             } else {
                                 tone(0xA1A1AA, 0x92929F)
                             })))
@@ -1161,34 +1187,12 @@ impl MuseWindow {
                     .child(
                         div()
                             .child(
-                                div()
-                                    .mb_1()
-                                    .flex()
-                                    .justify_between()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_size(px(11.))
-                                            .text_color(rgb(colors().secondary))
-                                            .child("密码"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("proxy-reveal-secret")
-                                            .text_size(px(10.))
-                                            .text_color(rgb(colors().blue))
-                                            .cursor_pointer()
-                                            .child(if editor.reveal { "隐藏" } else { "显示" })
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.proxy_editor.reveal =
-                                                    !this.proxy_editor.reveal;
-                                                let secure = !this.proxy_editor.reveal;
-                                                this.proxy_editor.secret.update(cx, |input, cx| {
-                                                    input.set_secure(secure, cx)
-                                                });
-                                                cx.notify();
-                                            })),
-                                    ),
+                                div().mb_1().flex().justify_between().items_center().child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(colors().secondary))
+                                        .child("密码"),
+                                ),
                             )
                             .child(input_surface(editor.secret.clone())),
                     )
@@ -1392,15 +1396,16 @@ impl Render for MuseWindow {
                 .active_account()
                 .and_then(|a| a.active_tab())
                 .is_some_and(|t| t.loading);
-        let status = if !self.save_enabled {
-            format!("配置文件有误，已禁止覆盖保存：{}", self.status)
-        } else if let Some(error) = self
+        let page_error = self
             .workspace
             .active_account()
-            .and_then(|account| account.active_tab())
-            .and_then(|tab| tab.error.clone())
-        {
-            error
+            .and_then(|a| a.active_tab())
+            .and_then(|t| t.error.as_ref());
+        let failed = !self.save_enabled || page_error.is_some();
+        let status = if !self.save_enabled {
+            format!("配置文件有误，已禁止覆盖保存：{}", self.status)
+        } else if let Some(error) = page_error {
+            error.clone()
         } else {
             self.status.clone()
         };
@@ -1472,6 +1477,11 @@ impl Render for MuseWindow {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if this.group_dialog.is_some() {
                     this.group_dialog_key(&event.keystroke, window, cx);
+                } else if event.keystroke.key == "tab"
+                    && this.account_dialog.is_some()
+                    && !this.proxy_drawer_visible()
+                {
+                    this.tab_account_field(event.keystroke.modifiers.shift, window, cx);
                 } else if event.keystroke.key == "tab" && !this.has_browser_overlay() {
                     if event.keystroke.modifiers.shift {
                         window.focus_prev();
@@ -1522,7 +1532,7 @@ impl Render for MuseWindow {
                             .flex()
                             .flex_col()
                             .when(!self.show_start_page, |element| {
-                                element.child(self.render_toolbar(cx))
+                                element.child(self.render_toolbar(window, cx))
                             })
                             .when(self.show_start_page, |element| {
                                 element.child(crate::motion::animate(
@@ -1561,13 +1571,29 @@ impl Render for MuseWindow {
                     .border_t_1()
                     .border_color(rgb(colors().line))
                     .bg(rgb(colors().surface))
-                    .child(glyph("shield-check", 12., colors().muted))
+                    .child(glyph(
+                        if failed {
+                            "help-circle"
+                        } else {
+                            "device-desktop"
+                        },
+                        13.,
+                        if failed {
+                            colors().danger
+                        } else {
+                            colors().muted
+                        },
+                    ))
                     .child(
                         div()
                             .flex_none()
                             .text_size(px(11.))
                             .text_color(rgb(colors().muted))
-                            .child("账号数据仅保存在本机"),
+                            .child(if failed {
+                                "需要处理"
+                            } else {
+                                "本机工作区"
+                            }),
                     )
                     .child(div().flex_1())
                     .when(loading, |element| {
@@ -1575,12 +1601,24 @@ impl Render for MuseWindow {
                     })
                     .child(
                         div()
+                            .id("status-detail")
                             .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
+                            .truncate()
                             .text_size(px(11.))
-                            .text_color(rgb(colors().secondary))
-                            .child(if self.show_start_page {
+                            .text_color(rgb(if failed {
+                                colors().danger
+                            } else {
+                                colors().secondary
+                            }))
+                            .tooltip({
+                                let detail = status.clone();
+                                move |_, cx| cx.new(|_| AccountHint(detail.clone())).into()
+                            })
+                            .child(if failed {
+                                status
+                            } else if status.starts_with("本地代理追踪：") {
+                                "代理追踪已启用".into()
+                            } else if self.show_start_page {
                                 format!("工作室 · {} 个账号", self.workspace.accounts.len())
                             } else if loading {
                                 "正在加载页面".into()
