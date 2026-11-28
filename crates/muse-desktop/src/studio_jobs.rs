@@ -182,12 +182,20 @@ impl MuseWindow {
         self.studio.save(&self.data_dir);
         cx.notify();
     }
-    fn studio_session(
+    pub(super) fn studio_session(
         &mut self,
         id: AccountId,
         window: &Window,
     ) -> Result<muse_core::BrowserIdentity, String> {
-        let conversation = self.studio.active;
+        self.studio_session_for(id, self.studio.active, window)
+    }
+
+    pub(super) fn studio_session_for(
+        &mut self,
+        id: AccountId,
+        conversation: uuid::Uuid,
+        window: &Window,
+    ) -> Result<muse_core::BrowserIdentity, String> {
         if let Some(identity) = self
             .studio
             .sessions
