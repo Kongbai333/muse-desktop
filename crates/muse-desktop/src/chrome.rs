@@ -337,6 +337,34 @@ impl MuseWindow {
             .when(!self.show_start_page, |element| {
                 element.child(self.render_tabs(cx))
             })
+            .when(self.show_start_page, |element| {
+                element.children([(true, "画布"), (false, "工作室")].map(|(canvas, label)| {
+                    div()
+                        .id(if canvas {
+                            "workspace-canvas"
+                        } else {
+                            "workspace-studio"
+                        })
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(rgb(if self.canvas_open == canvas {
+                            colors().text
+                        } else {
+                            colors().muted
+                        }))
+                        .when(self.canvas_open == canvas, |el| el.bg(rgb(colors().fill)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.canvas_open = canvas;
+                            this.sync_canvas(window);
+                            window.focus(&this.focus);
+                            cx.notify();
+                        }))
+                        .child(label)
+                }))
+            })
             .child(
                 div()
                     .id("window-drag-region")
@@ -1388,8 +1416,10 @@ impl Render for MuseWindow {
             window.request_animation_frame();
         }
         self.ensure_page_freeze();
+        self.sync_canvas(window);
         self.browsers
             .sync_visibility(self.visible_browser_identity(), Self::browser_rect(layout));
+        self.sync_detail_occlusion(window);
         let loading = !self.show_start_page
             && self
                 .workspace
@@ -1534,7 +1564,7 @@ impl Render for MuseWindow {
                             .when(!self.show_start_page, |element| {
                                 element.child(self.render_toolbar(window, cx))
                             })
-                            .when(self.show_start_page, |element| {
+                            .when(self.show_start_page && !self.canvas_open, |element| {
                                 element.child(crate::motion::animate(
                                     self.render_studio_home(layout.width, window, cx),
                                     self.navigation_transition,
@@ -1542,6 +1572,9 @@ impl Render for MuseWindow {
                                     crate::motion::MotionKind::Modal,
                                     8.,
                                 ))
+                            })
+                            .when(self.show_start_page && self.canvas_open, |element| {
+                                element.child(div().flex_1().w_full().bg(rgb(colors().canvas)))
                             })
                             .when(!self.show_start_page, |element| {
                                 element.child(self.render_browser_fallback(cx))
@@ -1619,7 +1652,15 @@ impl Render for MuseWindow {
                             } else if status.starts_with("本地代理追踪：") {
                                 "代理追踪已启用".into()
                             } else if self.show_start_page {
-                                format!("工作室 · {} 个账号", self.workspace.accounts.len())
+                                format!(
+                                    "{} · {} 个账号",
+                                    if self.canvas_open {
+                                        "画布"
+                                    } else {
+                                        "工作室"
+                                    },
+                                    self.workspace.accounts.len()
+                                )
                             } else if loading {
                                 "正在加载页面".into()
                             } else if status.is_empty() || status.contains("保存在本机") {

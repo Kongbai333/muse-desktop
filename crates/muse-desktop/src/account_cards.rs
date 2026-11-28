@@ -761,8 +761,7 @@ impl MuseWindow {
                         .get()
                         .is_some_and(|bounds| bounds.contains(&window.mouse_position()))
                 {
-                    this.account_detail = None;
-                    cx.notify();
+                    this.clear_account_detail(cx);
                 }
             });
         }));
@@ -772,6 +771,7 @@ impl MuseWindow {
         self.detail_open_timer = None;
         self.detail_close_timer = None;
         self.detail_bounds.set(None);
+        self.detail_occlusion.borrow_mut().clear();
         if self.account_detail.take().is_some() {
             cx.notify();
         }
@@ -791,6 +791,7 @@ impl MuseWindow {
         let top = (detail.anchor_y - px(35.)).max(px(36.));
         let id = detail.account;
         let bounds = self.detail_bounds.clone();
+        let occlusion = self.detail_occlusion.clone();
         Some(
             anchored()
                 .position(point(px(side), top))
@@ -798,6 +799,7 @@ impl MuseWindow {
                 .child(
                     div()
                         .id("account-detail")
+                        .relative()
                         .w(px(width))
                         .rounded_lg()
                         .border_1()
@@ -805,9 +807,15 @@ impl MuseWindow {
                         .bg(rgb(colors().panel))
                         .shadow_lg()
                         .child(
-                            canvas(move |area, _, _| bounds.set(Some(area)), |_, _, _, _| {})
-                                .absolute()
-                                .inset_0(),
+                            canvas(
+                                move |area, window, _| {
+                                    bounds.set(Some(area));
+                                    let _ = occlusion.borrow_mut().place(window, area);
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .inset_0(),
                         )
                         .child(
                             div()

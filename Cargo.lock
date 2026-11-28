@@ -3643,7 +3643,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "muse-core"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "serde",
  "serde_json",
@@ -3653,7 +3653,7 @@ dependencies = [
 
 [[package]]
 name = "muse-desktop"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "base64 0.22.1",
  "gpui",
@@ -3682,7 +3682,7 @@ dependencies = [
 
 [[package]]
 name = "muse-proxy"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "base64 0.22.1",
  "bytes",

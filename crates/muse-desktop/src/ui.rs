@@ -110,6 +110,8 @@ pub struct MuseWindow {
     smoke: Option<Smoke>,
     _bounds_observer: Subscription,
     show_start_page: bool,
+    canvas_open: bool,
+    canvas: Option<crate::canvas_host::CanvasHost>,
     sidebar: crate::sidebar_state::SidebarState,
     sidebar_motion: crate::motion::MotionValue,
     sidebar_dragging: bool,
@@ -120,6 +122,7 @@ pub struct MuseWindow {
     account_keyboard_focus: Option<AccountId>,
     account_detail: Option<account_cards::AccountDetail>,
     detail_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    detail_occlusion: std::rc::Rc<std::cell::RefCell<crate::windows_host::HoverOcclusion>>,
     detail_open_timer: Option<(AccountId, Task<()>)>,
     detail_close_timer: Option<Task<()>>,
     inspector_open: bool,
@@ -374,6 +377,9 @@ impl MuseWindow {
             smoke,
             _bounds_observer: observer,
             show_start_page: diagnostic_home.is_none(),
+            canvas_open: diagnostic_home.is_none()
+                && !std::env::args().any(|a| a == "--studio-layout-check"),
+            canvas: None,
             sidebar,
             sidebar_motion,
             sidebar_dragging: false,
@@ -384,6 +390,7 @@ impl MuseWindow {
             account_keyboard_focus: None,
             account_detail: None,
             detail_bounds: Default::default(),
+            detail_occlusion: Default::default(),
             detail_open_timer: None,
             detail_close_timer: None,
             inspector_open: false,
@@ -459,13 +466,33 @@ impl MuseWindow {
         }
     }
 
-    /// Native WebViews sit above every GPUI element, so dialogs and menus must
-    /// hide the live page. Before hiding it, a still frame is captured and shown
-    /// in its place, so the page never turns blank behind an overlay.
+    /// Blocking dialogs and menus may use a still frame. Lightweight account
+    /// hover cards instead occlude only their own footprint and keep the page live.
     fn page_frozen(&self) -> bool {
-        !self.show_start_page
-            && (self.has_browser_overlay() || self.account_detail.is_some())
-            && !self.proxy_drawer_visible()
+        !self.show_start_page && self.has_browser_overlay() && !self.proxy_drawer_visible()
+    }
+
+    pub(super) fn sync_detail_occlusion(&self, window: &Window) {
+        use wry::WebViewExtWindows;
+        let target =
+            if self.account_detail.is_none() || self.has_browser_overlay() || self.sidebar_dragging
+            {
+                None
+            } else if self.show_start_page {
+                self.canvas
+                    .as_ref()
+                    .filter(|_| self.canvas_open && self.studio.viewer.is_none())
+                    .map(|canvas| canvas.view.hwnd())
+            } else {
+                self.visible_browser_identity()
+                    .and_then(|identity| self.browsers.view(identity.tab_id))
+                    .map(|view| view.hwnd())
+            };
+        let mut occlusion = self.detail_occlusion.borrow_mut();
+        occlusion.set_target(target);
+        if let Some(bounds) = self.detail_bounds.get() {
+            let _ = occlusion.place(window, bounds);
+        }
     }
 
     /// Captures the active page in the background while nothing covers it.
@@ -691,6 +718,7 @@ impl MuseWindow {
         if let Err(error) = self.browsers.set_theme(mode) {
             self.status = format!("客户端主题已切换，网页主题设置失败：{error}");
         }
+        self.sync_canvas(window);
         // A snapshot from the previous palette must not cover the new page.
         self.page_snapshot = None;
         self.freeze_frame = None;
@@ -1161,6 +1189,7 @@ impl MuseWindow {
         changed |= self.poll_cookie_logins();
         changed |= self.tick_cookies(window, cx);
         self.tick_studio(window, cx);
+        self.tick_canvas(window, cx);
         let refresh_count = self.refresh_accounts.len();
         self.refresh_accounts.retain(|id, (identity, at)| {
             self.workspace.contains_identity(*identity)
@@ -2088,6 +2117,8 @@ mod proxy_editor;
 mod account_cards;
 #[path = "account_dialog.rs"]
 mod account_dialog;
+#[path = "canvas_ui.rs"]
+mod canvas_ui;
 #[path = "cookie_ui.rs"]
 mod cookie_ui;
 #[path = "group_ui.rs"]

@@ -11,6 +11,8 @@ mod assets;
 mod browser;
 mod browser_locale;
 mod browser_route;
+mod canvas_host;
+mod canvas_store;
 mod cookie_export;
 mod cookie_import;
 mod diagnostics;
